@@ -1,6 +1,6 @@
 from argparse import ArgumentParser
-from dataclasses import dataclass
-from typing import Callable, Optional, List, Tuple
+from dataclasses import dataclass, field
+from typing import Callable, Optional, List, Tuple, Dict, Literal
 from playwright.sync_api import (
     Page,
     Response as PlaywrightResponse,
@@ -693,3 +693,241 @@ def get_arg_parser(description: str = "Generic Daily Bonus Claimer") -> Argument
         help="Path to user data directory for browser session",
     )
     return parser
+
+
+# ============================================================================
+# Parameterized Casino Configuration System
+# ============================================================================
+
+
+@dataclass
+class LoginConfig:
+    """Configuration for login form selectors and behavior."""
+
+    username_selector: str
+    password_selector: str
+    login_submit_selector: str
+    totp_code_selector: Optional[str] = None
+    totp_submit_selector: Optional[str] = None
+    pre_login_callback: Optional[Callable[[Page], None]] = None
+    post_login_callback: Optional[Callable[[Page], None]] = None
+
+
+@dataclass
+class MTBClaimConfig:
+    """Configuration for Modal-Tab-Button claiming pattern."""
+
+    modal_selector: str  # Button to open modal (e.g., wallet button)
+    tab_selector: str  # Tab inside modal (e.g., daily bonus tab)
+    btn_selector: str  # Claim button
+    close_btn_selector: str  # Modal close button
+
+
+@dataclass
+class GenericClaimConfig:
+    """Configuration for Generic Accept/Close modal claiming pattern."""
+
+    main_enabled_selector: str  # Selector for enabled action buttons
+    modal_selector: str  # Modal container selector
+    close_modal_selector: str  # Close button selector
+
+
+@dataclass
+class CasinoConfig:
+    """Complete configuration for a casino automation script.
+
+    This dataclass contains all parameters needed to create a fully functional
+    casino automation script using the factory function.
+    """
+
+    # Required: Basic information
+    name: str  # Casino name (e.g., "Stake.us")
+    url: str  # Main casino URL
+    login_url: str  # Login page URL (can be same as url)
+
+    # Required: Login configuration
+    login: LoginConfig
+
+    # Required: Currency display configuration
+    currency_display: CurrencyDisplayConfig
+
+    # Required: Bonus claiming configuration (choose one pattern)
+    claim_config: MTBClaimConfig | GenericClaimConfig
+    claim_pattern: Literal["mtb", "generic"] = "mtb"
+
+    # Optional: Custom balance parser
+    custom_balance_parser: Optional[Callable[[Page], Dict[str, Optional[float]]]] = None
+
+    # Optional: Additional page actions to perform after standard flow
+    additional_actions: Optional[List[Callable[[Page], None]]] = field(default_factory=list)
+
+    # Optional: Custom page action timeout
+    page_wait_timeout: int = 5000
+
+    # Optional: Fetch timeout
+    fetch_timeout: int = 60000
+
+    # Optional: Description for CLI
+    description: str = "Casino Automation Script"
+
+    # Optional: Whether 2FA is required
+    requires_2fa: bool = False
+
+
+def make_casino_automation(
+    config: CasinoConfig,
+) -> Callable[[bool, bool, bool, Optional[str], Optional[str]], None]:
+    """Factory function that creates a complete casino automation main function.
+
+    This function takes a CasinoConfig and returns a ready-to-use main() function
+    that can be called with standard CLI arguments.
+
+    Args:
+        config: CasinoConfig object with all casino-specific parameters
+
+    Returns:
+        A main() function that accepts: headless, google_oauth, skip_claim, proxy, user_data_dir
+
+    Example:
+        >>> config = CasinoConfig(
+        ...     name="MyCasino",
+        ...     url="https://mycasino.com",
+        ...     login_url="https://mycasino.com/login",
+        ...     login=LoginConfig(...),
+        ...     currency_display=CurrencyDisplayConfig(...),
+        ...     claim_config=MTBClaimConfig(...),
+        ... )
+        >>> main = make_casino_automation(config)
+        >>> main(headless=True, skip_claim=False, proxy=None, user_data_dir=None)
+    """
+
+    # Create login action factory
+    login_action_factory = make_login_action_factory(
+        username_selector=config.login.username_selector,
+        password_selector=config.login.password_selector,
+        login_submit_selector=config.login.login_submit_selector,
+        totp_code_selector=config.login.totp_code_selector,
+        totp_submit_selector=config.login.totp_submit_selector,
+        pre_login_form_callback=config.login.pre_login_callback,
+        post_login_form_callback=config.login.post_login_callback,
+    )
+
+    # Create account state parser (use custom if provided, otherwise use default)
+    if config.custom_balance_parser:
+        get_account_state = config.custom_balance_parser
+    else:
+        get_account_state_func = make_get_casino_account_state(config.currency_display)
+
+        def get_account_state(page: Page) -> CasinoAccountState | Dict[str, Optional[float]]:
+            return get_account_state_func(page)
+
+    # Create claim bonus action based on pattern
+    if config.claim_pattern == "mtb":
+        if not isinstance(config.claim_config, MTBClaimConfig):
+            raise ValueError("claim_pattern is 'mtb' but claim_config is not MTBClaimConfig")
+        claim_bonus_action = make_modal_tab_button(
+            modal_selector=config.claim_config.modal_selector,
+            tab_selector=config.claim_config.tab_selector,
+            btn_selector=config.claim_config.btn_selector,
+            close_btn_selector=config.claim_config.close_btn_selector,
+        )
+    else:  # generic
+        if not isinstance(config.claim_config, GenericClaimConfig):
+            raise ValueError("claim_pattern is 'generic' but claim_config is not GenericClaimConfig")
+        claim_bonus_action = make_generic_accept_or_close_modals(
+            main_enabled_selector=config.claim_config.main_enabled_selector,
+            modal_selector=config.claim_config.modal_selector,
+            close_modal_selector=config.claim_config.close_modal_selector,
+        )
+
+    def main(
+        headless: bool = False,
+        google_oauth: bool = False,
+        skip_claim: bool = False,
+        proxy: Optional[str] = None,
+        user_data_dir: Optional[str] = None,
+    ):
+        """Main function for casino automation.
+
+        Args:
+            headless: Run browser in headless mode
+            google_oauth: Enable Google OAuth handling (placeholder for future use)
+            skip_claim: Skip claiming the daily bonus
+            proxy: Proxy server to use
+            user_data_dir: Path to user data directory for browser session
+        """
+        # Get credentials from environment
+        username, password, totp_secret = get_credentials(config.url, twofa=config.requires_2fa)
+
+        # Configure additional browser arguments
+        additional_args = {}
+        if user_data_dir is not None:
+            additional_args["user_data_dir"] = user_data_dir
+
+        # Create login action with credentials
+        login_action = login_action_factory(username, password, totp_secret)
+
+        def casino_action(page: Page) -> None:
+            """Main page action that orchestrates all casino operations."""
+            # Step 1: Login
+            log.info(f"[{config.name}] Starting login process...")
+            login_action(page)
+            wait_for_load_all_safe(page)
+            log.info(f"[{config.name}] Login completed successfully")
+
+            # Step 2: Get account state
+            log.info(f"[{config.name}] Reading account balances...")
+            account_state = get_account_state(page)
+            log.info(f"[{config.name}] Account State: %s", account_state)
+
+            # Step 3: Claim bonus (unless skipped)
+            if not skip_claim:
+                log.info(f"[{config.name}] Attempting to claim daily bonus...")
+                try:
+                    result = claim_bonus_action(page)
+                    if config.claim_pattern == "generic":
+                        if result:
+                            log.info(f"[{config.name}] Daily bonus claimed successfully")
+                        else:
+                            log.info(f"[{config.name}] No daily bonus available to claim")
+                    else:
+                        log.info(f"[{config.name}] Bonus claim action completed")
+                except Exception as e:
+                    log.error(f"[{config.name}] Error during bonus claim: %s", str(e))
+            else:
+                log.info(f"[{config.name}] Skipping daily bonus claim (--skip-claim flag set)")
+
+            wait_for_load_all_safe(page, timeout=config.page_wait_timeout)
+
+            # Step 4: Additional actions (if any)
+            if config.additional_actions:
+                log.info(f"[{config.name}] Executing {len(config.additional_actions)} additional action(s)...")
+                for i, action in enumerate(config.additional_actions, 1):
+                    try:
+                        log.info(f"[{config.name}] Running additional action {i}/{len(config.additional_actions)}")
+                        action(page)
+                        wait_for_load_all_safe(page)
+                    except Exception as e:
+                        log.error(f"[{config.name}] Error in additional action {i}: %s", str(e))
+
+            log.info(f"[{config.name}] Casino action completed successfully")
+
+        # Execute the casino action in a stealthy browser session
+        with StealthySession(
+            proxy=proxy,
+            headless=headless,
+            humanize=True,
+            load_dom=True,
+            google_search=False,
+            additional_args=additional_args,
+        ) as session:
+            log.info(f"[{config.name}] Fetching {config.login_url}...")
+            _: Response = session.fetch(
+                config.login_url,
+                page_action=casino_action,
+                wait=config.page_wait_timeout,
+                timeout=config.fetch_timeout,
+            )
+            log.info(f"[{config.name}] Session completed")
+
+    return main
