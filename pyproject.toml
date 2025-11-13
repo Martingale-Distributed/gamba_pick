@@ -70,10 +70,10 @@ shell = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/cycle-five/gamba_pick"
+Homepage = "https://github.com/Martingale-Distributed/gamba_pick"
 Documentation = "https://gamba-pick.readthedocs.io/en/latest/"
-Repository = "https://github.com/cycle-five/gamba_pick"
-"Bug Tracker" = "https://github.com/cycle-five/gamba_pick/issues"
+Repository = "https://github.com/Martingale-Distributed/gamba_pick"
+"Bug Tracker" = "https://github.com/Martingale-Distributed/gamba_pick/issues"
 
 [project.scripts]
 scrapling = "gamba_pick.cli:main"
