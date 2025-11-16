@@ -25,9 +25,6 @@ Where {SITE_PREFIX} is derived from your URL (e.g., STAKE for stake.us)
 """
 
 from typing import Callable, Optional, Dict
-import sys
-import os
-import pyotp
 import re
 
 # Scrapling and Playwright imports
