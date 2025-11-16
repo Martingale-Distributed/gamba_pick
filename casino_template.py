@@ -36,8 +36,6 @@ import re
 from scrapling.engines.toolbelt.custom import Response
 from scrapling.fetchers import StealthySession
 from playwright.sync_api import Page
-from playwright._impl._errors import TimeoutError, TargetClosedError
-
 # Casino module imports
 from casino import (
     get_credentials,
