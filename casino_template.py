@@ -24,7 +24,6 @@ Set these environment variables before running:
 Where {SITE_PREFIX} is derived from your URL (e.g., STAKE for stake.us)
 """
 
-from dataclasses import dataclass
 from typing import Callable, Optional, List, Dict
 import sys
 import os
