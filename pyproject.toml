@@ -7,7 +7,7 @@ name = "gamba_pick"
 version = "0.0.1"
 description = "Auto Gamba for Fun and Profit"
 readme = { file = "README.md", content-type = "text/markdown" }
-license = { file = "LICENSE" }
+license = "GPL-3.0-or-later"
 authors = [{ name = "Cycle Five", email = "cycle.five@proton.me" }]
 maintainers = [{ name = "Cycle Five", email = "cycle.five@proton.me" }]
 keywords = [
@@ -52,7 +52,7 @@ classifiers = [
 ]
 dependencies = [
     "pyotp>=2.9.0",
-    "click>=8.3.0",
+    "click>=8.3.1",
     "curl_cffi>=0.13.0",
     "playwright>=1.55.0",
     "patchright>=1.55.2",
@@ -65,7 +65,7 @@ dependencies = [
 
 [project.optional-dependencies]
 shell = [
-    "IPython>=8.37",      # The last version that supports Python 3.10
+    "IPython>=8.3.0",     # The last version that supports Python 3.10
     "markdownify>=1.2.0",
 ]
 
@@ -79,7 +79,7 @@ Repository = "https://github.com/Martingale-Distributed/gamba_pick"
 scrapling = "gamba_pick.cli:main"
 
 [tool.setuptools]
-zip-safe = false
+zip-safe = true
 include-package-data = true
 
 [tool.setuptools.packages.find]
