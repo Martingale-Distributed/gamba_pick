@@ -263,9 +263,9 @@ claim_config: MTBClaimConfig | GenericClaimConfig  # Type-checked at runtime
 # Easy to reuse and customize
 base_config = create_stake_us_config()
 variant_config = CasinoConfig(
-    **{**base_config.__dict__,
-       'name': 'Stake Clone',
-       'url': 'https://stakeclone.com'}
+    **base_config.__dict__,
+    name='Stake Clone',
+    url='https://stakeclone.com'
 )
 ```
 
