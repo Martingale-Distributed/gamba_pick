@@ -31,14 +31,12 @@ from casino import (
     CasinoConfig,
     LoginConfig,
     MTBClaimConfig,
-    GenericClaimConfig,
     CurrencyDisplayConfig,
     Currency,
     # Factory function
     make_casino_automation,
     # Utilities
     get_arg_parser,
-    gaussian_random_delay,
     log,
 )
 
