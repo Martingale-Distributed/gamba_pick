@@ -626,7 +626,7 @@ def parse_account_state_res(res: Response, currency: str = "UNK") -> AccountStat
     )
 
 
-def google_oauth_login_page_make() -> Callable[[Page], None]:
+def google_oauth_login_page_make() -> tuple[Callable[[Page], None], Callable[[], bool]]:
     """Create a Google OAuth login page action.
 
     Returns:
@@ -1036,9 +1036,9 @@ def main(
                 )
                 _: Response = session.fetch(f"{pick.url}faucet.php", page_action=faucet, wait=5000, timeout=30000)
 
-                log.info("About to play keno on %s", pick.url)
                 # Check if Response object has a page attribute
                 if play_keno:
+                    log.info("About to play keno on %s", pick.url)
                     _: Response = session.fetch(
                         f"{pick.url}keno.php", page_action=play_keno_func, timeout=0, solve_cloudflare=False
                     )

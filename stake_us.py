@@ -55,7 +55,7 @@ close_selectors = [
 ]
 wallet_btn_selector = 'button[data-testid="wallet"], button[data-analytics="global-navbar-wallet-button"]'
 daily_bonus_btn_selector = 'button[data-testid="dailyBonus"]'
-claim_btn_selector = "button.justify-center:nth-child(4)"
+claim_btn_selector = 'button[type="submit"]'
 close_btn_selector = 'button[data-testid="modal-close"]'
 
 login_action_factory = make_login_action_factory(
