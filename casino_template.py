@@ -35,7 +35,7 @@ import re
 # Scrapling and Playwright imports
 from scrapling.engines.toolbelt.custom import Response
 from scrapling.fetchers import StealthySession
-from playwright.sync_api import Page, Error as PlaywrightError, Locator, ElementHandle
+from playwright.sync_api import Page
 from playwright.sync_api import expect
 from playwright._impl._errors import TimeoutError, TargetClosedError
 
