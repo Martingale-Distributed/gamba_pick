@@ -11,18 +11,14 @@ license = "GPL-3.0-or-later"
 authors = [{ name = "Cycle Five", email = "cycle.five@proton.me" }]
 maintainers = [{ name = "Cycle Five", email = "cycle.five@proton.me" }]
 keywords = [
-    "web-scraping",
-    "scraping",
+    "gambling",
+    "casino",
     "automation",
     "browser-automation",
-    "data-extraction",
-    "html-parsing",
-    "undetectable",
+    "gamba",
+    "betting",
     "playwright",
-    "selenium-alternative",
-    "web-crawler",
     "browser",
-    "crawling",
 ]
 requires-python = ">=3.10"
 classifiers = [
@@ -32,13 +28,11 @@ classifiers = [
     # "Development Status :: 6 - Mature",
     # "Development Status :: 7 - Inactive",
     "Intended Audience :: Developers",
-    "Intended Audience :: Information Technology",
+    "Intended Audience :: End Users/Desktop",
     "Natural Language :: English",
     "Topic :: Internet :: WWW/HTTP",
     "Topic :: Internet :: WWW/HTTP :: Browsers",
-    "Topic :: Text Processing :: Markup",
-    "Topic :: Text Processing :: Markup :: HTML",
-    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Games/Entertainment",
     "Topic :: Software Development :: Libraries",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Programming Language :: Python :: 3",
@@ -59,8 +53,6 @@ dependencies = [
     "camoufox>=0.4.11",
     "geoip2>=5.1.0",
     "msgspec>=0.19.0",
-    "scrapling @ file:///home/lothrop/src/Scrapling.worktrees/dev2",
-
 ]
 
 [project.optional-dependencies]
@@ -76,7 +68,7 @@ Repository = "https://github.com/Martingale-Distributed/gamba_pick"
 "Bug Tracker" = "https://github.com/Martingale-Distributed/gamba_pick/issues"
 
 [project.scripts]
-scrapling = "gamba_pick.cli:main"
+gamba-pick = "gamba_pick.cli:main"
 
 [tool.setuptools]
 zip-safe = true
