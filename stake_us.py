@@ -1,21 +1,12 @@
-from argparse import ArgumentParser
-from dataclasses import dataclass
 import pyotp
-from typing import Callable, Optional
+from typing import Optional
 from playwright.sync_api import (
     Page,
-    Response as PlaywrightResponse,
-    Locator,
-    Error as PlaywrightError,
 )
 from scrapling.fetchers import StealthySession
 from scrapling.engines.toolbelt.custom import Response
 from scrapling.cli import log
-from scrapling_pick import get_credentials, gaussian_random_delay
-import sys
-import os
-
-# sys.path.append(".")
+from scrapling_pick import get_credentials
 
 from casino import (
     get_arg_parser,
@@ -25,8 +16,6 @@ from casino import (
     make_get_casino_account_state,
     make_modal_tab_button,
     make_login_action_factory,
-    make_handle_google_one_tap_popup,
-    # make_casino_action_factory,
     wait_for_load_all_safe,
 )
 
@@ -102,8 +91,6 @@ def main(
         "password": password,
         "totp_secret": totp_secret,
     }
-    # mtb_action = make_mtb_action(**action_args)
-
     additional_args = {}
     if user_data_dir is not None:
         additional_args["user_data_dir"] = user_data_dir
