@@ -10,20 +10,47 @@ from playwright.sync_api import (
     expect,
 )
 from urllib.parse import urlparse
-from scrapling.fetchers import StealthySession
-from scrapling.engines.toolbelt.custom import Response
-from scrapling.cli import log
+
 
 import pyotp
 import random
 import sys
 import os
+import logging
+from functools import lru_cache
 
 # Default contant values
 CLICK_TIMEOUT_MS = 5000  # Default timeout for click operations
 MAX_CLICK_RETRIES = 3  # Maximum number of retry attempts for failed clicks
 HANG_DETECTION_SECONDS = 30  # Seconds without balance change before detecting hang
 MAX_KENO_ITERATIONS = 1000  # Maximum iterations in gambling loop as safety net
+
+
+@lru_cache(1, typed=True)
+def setup_logger():
+    """
+    Create and configure a logger with a standard format.
+
+    :returns: logging.Logger: Configured logger instance
+    """
+    logger = logging.getLogger("gamba_pick")
+    logger.setLevel(logging.INFO)
+
+    formatter = logging.Formatter(
+        fmt="[%(asctime)s] %(levelname)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+    )
+
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+
+    # Add handler to logger (if not already added)
+    if not logger.handlers:
+        logger.addHandler(console_handler)
+
+    return logger
+
+
+log = setup_logger()
 
 
 @dataclass
@@ -160,7 +187,9 @@ def make_get_casino_account_state(
     return get_casino_account_state
 
 
-def make_handle_google_one_tap_popup(close_selectors: List[str]) -> Callable[[Page], None]:
+def make_handle_google_one_tap_popup(
+    close_selectors: List[str],
+) -> Callable[[Page], None]:
     """Generator for handling the google one tap popup
 
     close
@@ -192,7 +221,9 @@ def make_handle_google_one_tap_popup(close_selectors: List[str]) -> Callable[[Pa
                         # Check if element exists and click it
                         close_button = iframe.locator(selector)
                         if close_button.count() > 0:
-                            close_button.click(timeout=3000, delay=gaussian_random_delay())
+                            close_button.click(
+                                timeout=3000, delay=gaussian_random_delay()
+                            )
                             log.info(f"Closed Google popup using selector: {selector}")
                             clicked = True
                             break
@@ -307,7 +338,9 @@ def make_login_action_factory(
     login_submit_selector: str,
     totp_code_selector: Optional[str] = None,
     totp_submit_selector: Optional[str] = None,
-    pre_login_form_callback: Optional[Callable[[Page], None]] = make_handle_google_one_tap_popup(close_selectors),
+    pre_login_form_callback: Optional[
+        Callable[[Page], None]
+    ] = make_handle_google_one_tap_popup(close_selectors),
     post_login_form_callback: Optional[Callable[[Page], None]] = None,
 ) -> Callable[[str, str, Optional[str]], Callable[[Page], None]]:
     """Generator for creating a login action factory.
@@ -324,7 +357,9 @@ def make_login_action_factory(
         Callable[[str, str, Optional[str]], None]: A function that creates a login action.
     """
 
-    def login_action_factory(username: str, password: str, totp_secret: Optional[str]) -> Callable[[Page], None]:
+    def login_action_factory(
+        username: str, password: str, totp_secret: Optional[str]
+    ) -> Callable[[Page], None]:
         """Create a login page action.
 
         Args:
@@ -346,7 +381,9 @@ def make_login_action_factory(
             page.fill(password_selector, password)
 
             try:
-                page.click(login_submit_selector, delay=gaussian_random_delay(), timeout=10000)
+                page.click(
+                    login_submit_selector, delay=gaussian_random_delay(), timeout=10000
+                )
             except Exception as e:
                 log.error("Error during login: %s", str(e))
                 raise e
@@ -361,7 +398,9 @@ def make_login_action_factory(
             # Handle TOTP 2FA if applicable
             if totp_secret and totp_code_selector and totp_submit_selector:
                 try:
-                    page.wait_for_selector(totp_code_selector, state="visible", timeout=10000)
+                    page.wait_for_selector(
+                        totp_code_selector, state="visible", timeout=10000
+                    )
                     totp_code = pyotp.TOTP(totp_secret).now()
                     page.fill(totp_code_selector, totp_code)
                     page.click(totp_submit_selector, delay=gaussian_random_delay())
@@ -434,14 +473,18 @@ def make_generic_accept_or_close_modals(
 
     def accept_or_close_modals(page: Page) -> bool:
         claimed: bool = False
-        accept_tokens: set = set(["accept", "claim", "get", "collect", "yes", "agree", "okay"])
+        accept_tokens: set = set(
+            ["accept", "claim", "get", "collect", "yes", "agree", "okay"]
+        )
 
         try:
             log.info("Waiting for daily bonus modal to appear...")
             locator: Locator = page.locator(modal_selector)
             expect(locator.first).to_be_visible(timeout=5000)
         except AssertionError as _:
-            log.info("Initial alerts popups timed out, this likely means the daily bonus has already been claimed.")
+            log.info(
+                "Initial alerts popups timed out, this likely means the daily bonus has already been claimed."
+            )
             return False
 
         try:
@@ -453,7 +496,9 @@ def make_generic_accept_or_close_modals(
             while enabled_buttons.count() > 0:
                 n += 1
                 if n > 10:
-                    log.warning("Exceeded maximum attempts to find enabled claim button, aborting...")
+                    log.warning(
+                        "Exceeded maximum attempts to find enabled claim button, aborting..."
+                    )
                     break
 
                 # Get the first enabled button, does the order matter here?
@@ -469,11 +514,17 @@ def make_generic_accept_or_close_modals(
                     try:
                         button.click(delay=gaussian_random_delay(), timeout=5000)
                     except PlaywrightError as e:
-                        log.warning("Normal click failed, attempting force click: %s", str(e))
-                        button.click(delay=gaussian_random_delay(), timeout=5000, force=True)
+                        log.warning(
+                            "Normal click failed, attempting force click: %s", str(e)
+                        )
+                        button.click(
+                            delay=gaussian_random_delay(), timeout=5000, force=True
+                        )
                     claimed = True
                 else:
-                    log.info("Button text does not contain any accept tokens, skipping...")
+                    log.info(
+                        "Button text does not contain any accept tokens, skipping..."
+                    )
                     # Still click to dismiss it? Need more analysis on what kinds of elements show up here.
                     # Let's print some debug info instead for now.
                     log.debug("Button text: %s", button_text)
@@ -560,7 +611,10 @@ def gaussian_random_delay(mean: float = 50, stddev: float = 10) -> int:
 
 
 def wait_for_clickable(
-    page: Page, selector: str, timeout: int = CLICK_TIMEOUT_MS, scroll_into_view: bool = True
+    page: Page,
+    selector: str,
+    timeout: int = CLICK_TIMEOUT_MS,
+    scroll_into_view: bool = True,
 ) -> bool:
     """Wait for an element to be clickable (visible and enabled).
 
@@ -626,8 +680,15 @@ def safe_click(
     for attempt in range(max_retries):
         try:
             # Wait for element to be clickable
-            if not force and not wait_for_clickable(page, selector, timeout, scroll_into_view):
-                log.warning("Element %s not clickable on attempt %d/%d", selector, attempt + 1, max_retries)
+            if not force and not wait_for_clickable(
+                page, selector, timeout, scroll_into_view
+            ):
+                log.warning(
+                    "Element %s not clickable on attempt %d/%d",
+                    selector,
+                    attempt + 1,
+                    max_retries,
+                )
                 if attempt < max_retries - 1:
                     # Exponential backoff
                     backoff_time = 1000 * (2**attempt)
@@ -643,7 +704,13 @@ def safe_click(
             return True
 
         except Exception as e:
-            log.warning("Click failed on attempt %d/%d for %s: %s", attempt + 1, max_retries, selector, str(e)[:100])
+            log.warning(
+                "Click failed on attempt %d/%d for %s: %s",
+                attempt + 1,
+                max_retries,
+                selector,
+                str(e)[:100],
+            )
 
             if attempt < max_retries - 1:
                 # Exponential backoff
@@ -759,7 +826,9 @@ class CasinoConfig:
     custom_balance_parser: Optional[Callable[[Page], Dict[str, Optional[float]]]] = None
 
     # Optional: Additional page actions to perform after standard flow
-    additional_actions: Optional[List[Callable[[Page], None]]] = field(default_factory=list)
+    additional_actions: Optional[List[Callable[[Page], None]]] = field(
+        default_factory=list
+    )
 
     # Optional: Custom page action timeout
     page_wait_timeout: int = 5000
@@ -772,162 +841,3 @@ class CasinoConfig:
 
     # Optional: Whether 2FA is required
     requires_2fa: bool = False
-
-
-def make_casino_automation(
-    config: CasinoConfig,
-) -> Callable[[bool, bool, bool, Optional[str], Optional[str]], None]:
-    """Factory function that creates a complete casino automation main function.
-
-    This function takes a CasinoConfig and returns a ready-to-use main() function
-    that can be called with standard CLI arguments.
-
-    Args:
-        config: CasinoConfig object with all casino-specific parameters
-
-    Returns:
-        A main() function that accepts: headless, google_oauth, skip_claim, proxy, user_data_dir
-
-    Example:
-        >>> config = CasinoConfig(
-        ...     name="MyCasino",
-        ...     url="https://mycasino.com",
-        ...     login_url="https://mycasino.com/login",
-        ...     login=LoginConfig(...),
-        ...     currency_display=CurrencyDisplayConfig(...),
-        ...     claim_config=MTBClaimConfig(...),
-        ... )
-        >>> main = make_casino_automation(config)
-        >>> main(headless=True, skip_claim=False, proxy=None, user_data_dir=None)
-    """
-
-    # Create login action factory
-    login_action_factory = make_login_action_factory(
-        username_selector=config.login.username_selector,
-        password_selector=config.login.password_selector,
-        login_submit_selector=config.login.login_submit_selector,
-        totp_code_selector=config.login.totp_code_selector,
-        totp_submit_selector=config.login.totp_submit_selector,
-        pre_login_form_callback=config.login.pre_login_callback,
-        post_login_form_callback=config.login.post_login_callback,
-    )
-
-    # Create account state parser (use custom if provided, otherwise use default)
-    if config.custom_balance_parser:
-        get_account_state = config.custom_balance_parser
-    else:
-        get_account_state_func = make_get_casino_account_state(config.currency_display)
-
-        def get_account_state(page: Page) -> CasinoAccountState | Dict[str, Optional[float]]:
-            return get_account_state_func(page)
-
-    # Create claim bonus action based on pattern
-    if config.claim_pattern == "mtb":
-        if not isinstance(config.claim_config, MTBClaimConfig):
-            raise ValueError("claim_pattern is 'mtb' but claim_config is not MTBClaimConfig")
-        claim_bonus_action = make_modal_tab_button(
-            modal_selector=config.claim_config.modal_selector,
-            tab_selector=config.claim_config.tab_selector,
-            btn_selector=config.claim_config.btn_selector,
-            close_btn_selector=config.claim_config.close_btn_selector,
-        )
-    else:  # generic
-        if not isinstance(config.claim_config, GenericClaimConfig):
-            raise ValueError("claim_pattern is 'generic' but claim_config is not GenericClaimConfig")
-        claim_bonus_action = make_generic_accept_or_close_modals(
-            main_enabled_selector=config.claim_config.main_enabled_selector,
-            modal_selector=config.claim_config.modal_selector,
-            close_modal_selector=config.claim_config.close_modal_selector,
-        )
-
-    def main(
-        headless: bool = False,
-        google_oauth: bool = False,
-        skip_claim: bool = False,
-        proxy: Optional[str] = None,
-        user_data_dir: Optional[str] = None,
-    ):
-        """Main function for casino automation.
-
-        Args:
-            headless: Run browser in headless mode
-            google_oauth: Enable Google OAuth handling (placeholder for future use)
-            skip_claim: Skip claiming the daily bonus
-            proxy: Proxy server to use
-            user_data_dir: Path to user data directory for browser session
-        """
-        # Get credentials from environment
-        username, password, totp_secret = get_credentials(config.url, twofa=config.requires_2fa)
-
-        # Configure additional browser arguments
-        additional_args = {}
-        if user_data_dir is not None:
-            additional_args["user_data_dir"] = user_data_dir
-
-        # Create login action with credentials
-        login_action = login_action_factory(username, password, totp_secret)
-
-        def casino_action(page: Page) -> None:
-            """Main page action that orchestrates all casino operations."""
-            # Step 1: Login
-            log.info(f"[{config.name}] Starting login process...")
-            login_action(page)
-            wait_for_load_all_safe(page)
-            log.info(f"[{config.name}] Login completed successfully")
-
-            # Step 2: Get account state
-            log.info(f"[{config.name}] Reading account balances...")
-            account_state = get_account_state(page)
-            log.info(f"[{config.name}] Account State: %s", account_state)
-
-            # Step 3: Claim bonus (unless skipped)
-            if not skip_claim:
-                log.info(f"[{config.name}] Attempting to claim daily bonus...")
-                try:
-                    result = claim_bonus_action(page)
-                    if config.claim_pattern == "generic":
-                        if result:
-                            log.info(f"[{config.name}] Daily bonus claimed successfully")
-                        else:
-                            log.info(f"[{config.name}] No daily bonus available to claim")
-                    else:
-                        log.info(f"[{config.name}] Bonus claim action completed")
-                except Exception as e:
-                    log.error(f"[{config.name}] Error during bonus claim: %s", str(e))
-            else:
-                log.info(f"[{config.name}] Skipping daily bonus claim (--skip-claim flag set)")
-
-            wait_for_load_all_safe(page, timeout=config.page_wait_timeout)
-
-            # Step 4: Additional actions (if any)
-            if config.additional_actions:
-                log.info(f"[{config.name}] Executing {len(config.additional_actions)} additional action(s)...")
-                for i, action in enumerate(config.additional_actions, 1):
-                    try:
-                        log.info(f"[{config.name}] Running additional action {i}/{len(config.additional_actions)}")
-                        action(page)
-                        wait_for_load_all_safe(page)
-                    except Exception as e:
-                        log.error(f"[{config.name}] Error in additional action {i}: %s", str(e))
-
-            log.info(f"[{config.name}] Casino action completed successfully")
-
-        # Execute the casino action in a stealthy browser session
-        with StealthySession(
-            proxy=proxy,
-            headless=headless,
-            humanize=True,
-            load_dom=True,
-            google_search=False,
-            additional_args=additional_args,
-        ) as session:
-            log.info(f"[{config.name}] Fetching {config.login_url}...")
-            _: Response = session.fetch(
-                config.login_url,
-                page_action=casino_action,
-                wait=config.page_wait_timeout,
-                timeout=config.fetch_timeout,
-            )
-            log.info(f"[{config.name}] Session completed")
-
-    return main
