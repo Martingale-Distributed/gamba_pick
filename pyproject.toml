@@ -68,6 +68,18 @@ shell = [
     "IPython>=8.37",      # The last version that supports Python 3.10
     "markdownify>=1.2.0",
 ]
+test = [
+    "pytest>=8.0.0",
+    "pytest-playwright>=0.6.2",
+    "pytest-asyncio>=0.25.0",
+    "pytest-cov>=6.0.0",
+    "pytest-mock>=3.14.0",
+    "pytest-timeout>=2.3.1",
+    "pytest-xdist>=3.6.1",      # Parallel test execution
+    "hypothesis>=6.100.0",       # Property-based testing
+    "freezegun>=1.5.0",          # Time mocking
+    "responses>=0.25.0",         # HTTP mocking
+]
 
 [project.urls]
 Homepage = "https://github.com/Martingale-Distributed/gamba_pick"
@@ -85,3 +97,61 @@ include-package-data = true
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["gamba_pick*"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+    "--showlocals",
+    "--tb=short",
+    "--cov=.",
+    "--cov-report=term-missing",
+    "--cov-report=html",
+    "--cov-report=xml",
+]
+markers = [
+    "unit: Unit tests that don't require browser automation",
+    "integration: Integration tests with mocked browser",
+    "e2e: End-to-end tests requiring real browser and credentials",
+    "slow: Tests that take a long time to run",
+    "requires_credentials: Tests that require casino/faucet credentials",
+]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+timeout = 30
+filterwarnings = [
+    "error",
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+]
+
+[tool.coverage.run]
+source = ["."]
+omit = [
+    "tests/*",
+    "*/test_*.py",
+    "*_test.py",
+    "*/conftest.py",
+    "*/__pycache__/*",
+    "*/site-packages/*",
+    "*/venv/*",
+    "*/.venv/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "class .*\\bProtocol\\):",
+    "@(abc\\.)?abstractmethod",
+]
