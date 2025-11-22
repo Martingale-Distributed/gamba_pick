@@ -59,7 +59,7 @@ dependencies = [
     "camoufox>=0.4.11",
     "geoip2>=5.1.0",
     "msgspec>=0.19.0",
-    "scrapling @ file:///home/lothrop/src/Scrapling.worktrees/dev2",
+    "scrapling @ git+https://github.com/cycle-five/Scrapling.git@main",
 
 ]
 
