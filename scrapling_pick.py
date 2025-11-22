@@ -330,7 +330,9 @@ def get_balance(page: Page) -> float:
     return balance
 
 
-def bet_and_start_auto(page: Page, stop: bool = False, min_bet: float = 0.00000100) -> Optional[float]:
+def bet_and_start_auto(
+    page: Page, stop: bool = False, min_bet: float = 0.00000100
+) -> Optional[float]:
     """Stop any ongoing betting, rebet at 1/100 of balance, and start auto betting on the page.
 
     Args:
@@ -401,7 +403,11 @@ def play_keno_func(page: Page) -> None:
         log.info("Using game config: %s with min_bet: %f", game_config.name, min_bet)
     else:
         min_bet = 0.00000100
-        log.warning("No game config found for URL: %s, using default min_bet: %f", current_url, min_bet)
+        log.warning(
+            "No game config found for URL: %s, using default min_bet: %f",
+            current_url,
+            min_bet,
+        )
 
     # generate 7 random picks between 1 and 40
     picks = random.sample(range(1, 41), 7)
@@ -461,7 +467,11 @@ def play_keno_func(page: Page) -> None:
 
         # Check if balance is too low to continue (below 20x the bet amount)
         if balance < wager_amount * 20:
-            log.info("Balance too low (%f < %f), stopping keno game.", balance, wager_amount * 20)
+            log.info(
+                "Balance too low (%f < %f), stopping keno game.",
+                balance,
+                wager_amount * 20,
+            )
             # Try to stop autobet before exiting
             try:
                 safe_click(page, "#stop_autobet", timeout=CLICK_TIMEOUT_MS)
@@ -472,7 +482,11 @@ def play_keno_func(page: Page) -> None:
         # Check if balance grew significantly - rebet at new level (1% of balance)
         # Only rebet if balance is more than 300x current wager
         elif balance > wager_amount * 300:
-            log.info("Balance grew significantly (%f > %f), rebetting at higher amount.", balance, wager_amount * 300)
+            log.info(
+                "Balance grew significantly (%f > %f), rebetting at higher amount.",
+                balance,
+                wager_amount * 300,
+            )
             new_wager = bet_and_start_auto(page, stop=True, min_bet=min_bet)
             if new_wager is None:
                 log.error("Failed to rebet, exiting keno game")
@@ -484,7 +498,11 @@ def play_keno_func(page: Page) -> None:
 
         # Check if balance is extremely high - stop to prevent further risk
         elif balance > wager_amount * 1000:
-            log.info("Balance extremely high (%f > %f), stopping keno game to secure profits.", balance, wager_amount * 1000)
+            log.info(
+                "Balance extremely high (%f > %f), stopping keno game to secure profits.",
+                balance,
+                wager_amount * 1000,
+            )
             # Try to stop autobet before exiting
             try:
                 safe_click(page, "#stop_autobet", timeout=CLICK_TIMEOUT_MS)
@@ -942,7 +960,7 @@ def login_page_make(
     password: str,
     currency: str = "UNK",
     enable_screenshots: bool = False,
-) -> Callable[[Page], None]:
+) -> tuple[Callable[[Page], None], Callable[[], bool]]:
     """Create a login page action.
 
     Args:
@@ -1032,8 +1050,8 @@ def make_claim_faucet(
             page.wait_for_timeout(
                 gaussian_random_delay(mean=500, stddev=100)
             )  # Wait for some time, because.
-        except Exception:
-            log.info("No captcha box detected.")
+        except Exception as e:
+            log.info("No box detected: %s", e)
             return
 
         delay = gaussian_random_delay()
