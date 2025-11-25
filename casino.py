@@ -49,7 +49,7 @@ def setup_logger():
 
     return logger
 
-
+# This is the global logger used throughout the module
 log = setup_logger()
 
 
@@ -492,41 +492,51 @@ def make_generic_accept_or_close_modals(
             enabled_buttons: Locator = page.locator(main_enabled_selector)
             close_buttons: Locator = page.locator(close_modal_selector)
 
-            n = 0
-            while enabled_buttons.count() > 0:
-                n += 1
-                if n > 10:
+            for attempt in range(1, 11):  # Cleaner: explicit range instead of manual counter
+                if enabled_buttons.count() == 0:
+                    break
+                
+                if attempt == 10:
                     log.warning(
-                        "Exceeded maximum attempts to find enabled claim button, aborting..."
+                        "Exceeded maximum attempts to close all modals, aborting..."
                     )
                     break
 
-                # Get the first enabled button, does the order matter here?
-                button: Locator = enabled_buttons.first
+                # Get the last enabled button, it is likely on top
+                button: Locator = enabled_buttons.last
                 button_text: str = button.text_content()
                 button_words: set = set(button_text.lower().split())
 
                 log.info("Found enabled button with text: %s", button_text)
                 if accept_tokens & button_words:
-                    log.info("Found enabled button, clicking...")
+                    log.info(
+                        "Found enabled button, clicking button with text: %s",
+                        button_text,
+                    )
 
                     # Try normal click first, then force if it fails
                     try:
                         button.click(delay=gaussian_random_delay(), timeout=5000)
+                        claimed = True
                     except PlaywrightError as e:
                         log.warning(
-                            "Normal click failed, attempting force click: %s", str(e)
+                            "clicking button failed... trying on next iterator: %s",
+                            str(e),
                         )
-                        button.click(
-                            delay=gaussian_random_delay(), timeout=5000, force=True
-                        )
-                    claimed = True
+                        # Check if there's a blocking modal on top and try to close it
+                        if close_buttons.count() > 0:
+                            log.info("Attempting to close potentially blocking modal...")
+                            try:
+                                # Try closing the topmost modal (last in DOM order is typically on top)
+                                close_button: Locator = close_buttons.last
+                                close_button.click(delay=gaussian_random_delay(), timeout=3000)
+                                wait_for_load_all_safe(page, timeout=1000)
+                            except PlaywrightError as close_err:
+                                log.debug("Could not close blocking modal: %s", str(close_err))
                 else:
                     log.info(
                         "Button text does not contain any accept tokens, skipping..."
                     )
-                    # Still click to dismiss it? Need more analysis on what kinds of elements show up here.
-                    # Let's print some debug info instead for now.
                     log.debug("Button text: %s", button_text)
                     highlight_element_handle(button.element_handle())
                     # Maybe try to close the modal instead
@@ -536,7 +546,9 @@ def make_generic_accept_or_close_modals(
                         close_button.click(delay=gaussian_random_delay(), timeout=5000)
 
                 wait_for_load_all_safe(page, timeout=3000)
-                # Locator automatically re-queries the DOM, no need to reassign
+                # Locator automatically re-queries the DOM, no need to reassign? Try anyway.
+                enabled_buttons = page.locator(main_enabled_selector)
+                close_buttons = page.locator(close_modal_selector)
 
             log.info("Successfully processed all modals!")
         except PlaywrightError as e:
