@@ -18,6 +18,7 @@ __pycache__/
 
 # ai
 .claude/
+.agent/
 
 # installation package
 *.egg-info/
