@@ -3,7 +3,6 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional, List, Tuple, Dict, Literal
 from playwright.sync_api import (
     Page,
-    Response as PlaywrightResponse,
     Locator,
     Error as PlaywrightError,
     ElementHandle,
@@ -14,7 +13,6 @@ from urllib.parse import urlparse
 
 import pyotp
 import random
-import sys
 import os
 import logging
 from functools import lru_cache
