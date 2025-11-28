@@ -47,6 +47,7 @@ def setup_logger():
 
     return logger
 
+
 # This is the global logger used throughout the module
 log = setup_logger()
 
@@ -470,7 +471,7 @@ def make_generic_accept_or_close_modals(
     """
 
     def accept_or_close_modals(page: Page) -> bool:
-        claimed: bool = False
+        claimed: int = 0
         accept_tokens: set = set(
             ["accept", "claim", "get", "collect", "yes", "agree", "okay"]
         )
@@ -490,10 +491,12 @@ def make_generic_accept_or_close_modals(
             enabled_buttons: Locator = page.locator(main_enabled_selector)
             close_buttons: Locator = page.locator(close_modal_selector)
 
-            for attempt in range(1, 11):  # Cleaner: explicit range instead of manual counter
+            for attempt in range(
+                1, 11
+            ):  # Cleaner: explicit range instead of manual counter
                 if enabled_buttons.count() == 0:
                     break
-                
+
                 if attempt == 10:
                     log.warning(
                         "Exceeded maximum attempts to close all modals, aborting..."
@@ -501,7 +504,12 @@ def make_generic_accept_or_close_modals(
                     break
 
                 # Get the last enabled button, it is likely on top
-                button: Locator = enabled_buttons.last
+                n = (
+                    attempt
+                    if enabled_buttons.count() >= attempt
+                    else enabled_buttons.count()
+                ) - 1
+                button: Locator = enabled_buttons.nth(n)
                 button_text: str = button.text_content()
                 button_words: set = set(button_text.lower().split())
 
@@ -511,26 +519,28 @@ def make_generic_accept_or_close_modals(
                         "Found enabled button, clicking button with text: %s",
                         button_text,
                     )
+                    highlight_element_handle(button.element_handle())
 
                     # Try normal click first, then force if it fails
                     try:
                         button.click(delay=gaussian_random_delay(), timeout=5000)
-                        claimed = True
+                        # enabled_buttons = page.locator(main_enabled_selector)
+                        claimed += 1
                     except PlaywrightError as e:
                         log.warning(
                             "clicking button failed... trying on next iterator: %s",
                             str(e),
                         )
                         # Check if there's a blocking modal on top and try to close it
-                        if close_buttons.count() > 0:
-                            log.info("Attempting to close potentially blocking modal...")
-                            try:
-                                # Try closing the topmost modal (last in DOM order is typically on top)
-                                close_button: Locator = close_buttons.last
-                                close_button.click(delay=gaussian_random_delay(), timeout=3000)
-                                wait_for_load_all_safe(page, timeout=1000)
-                            except PlaywrightError as close_err:
-                                log.debug("Could not close blocking modal: %s", str(close_err))
+                        # if close_buttons.count() > 0:
+                        #     log.info("Attempting to close potentially blocking modal...")
+                        #     try:
+                        #         # Try closing the topmost modal (last in DOM order is typically on top)
+                        #         close_button: Locator = close_buttons.last
+                        #         close_button.click(delay=gaussian_random_delay(), timeout=3000)
+                        #         wait_for_load_all_safe(page, timeout=1000)
+                        #     except PlaywrightError as close_err:
+                        #         log.debug("Could not close blocking modal: %s", str(close_err))
                 else:
                     log.info(
                         "Button text does not contain any accept tokens, skipping..."
@@ -538,15 +548,14 @@ def make_generic_accept_or_close_modals(
                     log.debug("Button text: %s", button_text)
                     highlight_element_handle(button.element_handle())
                     # Maybe try to close the modal instead
-                    if close_buttons.count() > 0:
-                        log.info("Attempting to close modal instead...")
-                        close_button: Locator = close_buttons.first
-                        close_button.click(delay=gaussian_random_delay(), timeout=5000)
+                    # if close_buttons.count() > 0:
+                    #     log.info("Attempting to close modal instead...")
+                    #     close_button: Locator = close_buttons.first
+                    #     close_button.click(delay=gaussian_random_delay(), timeout=5000)
 
                 wait_for_load_all_safe(page, timeout=3000)
                 # Locator automatically re-queries the DOM, no need to reassign? Try anyway.
-                enabled_buttons = page.locator(main_enabled_selector)
-                close_buttons = page.locator(close_modal_selector)
+                # close_buttons = page.locator(close_modal_selector)
 
             log.info("Successfully processed all modals!")
         except PlaywrightError as e:
@@ -556,7 +565,7 @@ def make_generic_accept_or_close_modals(
         try:
             close_button: Locator = page.locator(close_modal_selector)
             if close_button.count() > 0:
-                close_button.click(delay=gaussian_random_delay(), timeout=3000)
+                close_button.first.click(delay=gaussian_random_delay(), timeout=3000)
                 log.info("Closed daily bonus modal")
         except PlaywrightError:
             log.warning("Could not close daily bonus modal")

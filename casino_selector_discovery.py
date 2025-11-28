@@ -23,6 +23,13 @@ import json
 
 from playwright.sync_api import sync_playwright, Page, Browser, ElementHandle
 
+# Import StealthySession for stealth browsing capabilities
+try:
+    from scrapling.fetchers import StealthySession
+    STEALTH_AVAILABLE = True
+except ImportError:
+    STEALTH_AVAILABLE = False
+
 # Import only what we need from casino.py to avoid scrapling dependency
 try:
     from casino import (
@@ -114,20 +121,20 @@ except ImportError:
         page_wait_timeout: int = 5000
         fetch_timeout: int = 60000
 
-    def url_to_env_prefix(url: str) -> str:
-        """Convert URL to environment variable prefix."""
-        parsed = urlparse(url)
-        domain = parsed.netloc.replace('www.', '').split('.')[0]
-        return domain.upper()
+    # def url_to_env_prefix(url: str) -> str:
+    #     """Convert URL to environment variable prefix."""
+    #     parsed = urlparse(url)
+    #     domain = parsed.netloc.replace('www.', '').split('.')[0]
+    #     return domain.upper()
 
-    def get_credentials(url: str, twofa: bool = False) -> Dict[str, Optional[str]]:
-        """Get credentials from environment variables."""
-        prefix = url_to_env_prefix(url)
-        return {
-            'username': os.environ.get(f'{prefix}_USERNAME'),
-            'password': os.environ.get(f'{prefix}_PASSWORD'),
-            'twofa': os.environ.get(f'{prefix}_2FA') if twofa else None,
-        }
+    # def get_credentials(url: str, twofa: bool = False) -> Dict[str, Optional[str]]:
+    #     """Get credentials from environment variables."""
+    #     prefix = url_to_env_prefix(url)
+    #     return {
+    #         'username': os.environ.get(f'{prefix}_USERNAME'),
+    #         'password': os.environ.get(f'{prefix}_PASSWORD'),
+    #         'twofa': os.environ.get(f'{prefix}_2FA') if twofa else None,
+    #     }
 
     def wait_for_load_all_safe(page: Page, timeout: int = 500) -> None:
         """Wait for page to finish loading."""
@@ -244,6 +251,8 @@ class CasinoSelectorDiscovery:
 
     # Common keywords for different element types
     LOGIN_KEYWORDS = ['login', 'signin', 'sign-in', 'log-in', 'auth']
+    LOGIN_PAGE_KEYWORDS = ['login', 'log in', 'signin', 'sign in', 'log-in', 'sign-in']
+    LOGIN_HREF_KEYWORDS = ['login', 'signin', 'sign-in', 'log-in', 'auth', 'account/login']
     USERNAME_KEYWORDS = ['username', 'email', 'user', 'login', 'account']
     PASSWORD_KEYWORDS = ['password', 'pass', 'pwd']
     TOTP_KEYWORDS = ['totp', '2fa', 'twofa', 'two-factor', 'code', 'token', 'authenticator']
@@ -257,28 +266,99 @@ class CasinoSelectorDiscovery:
     MODAL_KEYWORDS = ['modal', 'dialog', 'popup', 'overlay', 'wallet', 'account']
     CLOSE_KEYWORDS = ['close', 'dismiss', 'cancel', 'exit']
 
-    def __init__(self, url: str, headless: bool = True, timeout: int = 30000):
+    def __init__(
+        self,
+        url: str,
+        headless: bool = True,
+        timeout: int = 30000,
+        # Stealth parameters
+        proxy: Optional[str] = None,
+        humanize: bool = True,
+        solve_cloudflare: bool = False,
+        block_webrtc: bool = False,
+        geoip: bool = False,
+        user_data_dir: Optional[str] = None,
+        additional_args: Optional[Dict] = None,
+        use_stealth: bool = True,
+    ):
         self.url = url
         self.headless = headless
         self.timeout = timeout
+
+        # Stealth configuration
+        self.use_stealth = use_stealth and STEALTH_AVAILABLE
+        self.proxy = proxy
+        self.humanize = humanize
+        self.solve_cloudflare = solve_cloudflare
+        self.block_webrtc = block_webrtc
+        self.geoip = geoip
+        self.user_data_dir = user_data_dir
+        self.additional_args = additional_args or {}
+
+        # Runtime attributes
         self.page: Optional[Page] = None
         self.browser: Optional[Browser] = None
+        self.playwright = None
+        self._session = None  # StealthySession instance when using stealth mode
+
+    def _build_additional_args(self) -> Dict:
+        """Build additional args dict for StealthySession."""
+        args = dict(self.additional_args)
+        if self.user_data_dir:
+            args["user_data_dir"] = self.user_data_dir
+        return args
 
     def __enter__(self):
-        self.playwright = sync_playwright().start()
-        self.browser = self.playwright.chromium.launch(headless=self.headless)
-        context = self.browser.new_context(
-            viewport={'width': 1920, 'height': 1080},
-            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        )
-        self.page = context.new_page()
+        if self.use_stealth:
+            # Use StealthySession for stealth browsing capabilities
+            self._session = StealthySession(
+                headless=self.headless,
+                proxy=self.proxy,
+                humanize=self.humanize,
+                solve_cloudflare=self.solve_cloudflare,
+                block_webrtc=self.block_webrtc,
+                geoip=self.geoip,
+                timeout=self.timeout,
+                additional_args=self._build_additional_args(),
+            )
+            self._session.__enter__()
+
+            # Use _get_page() to get a page with stealth scripts applied
+            # This injects the compiled stealth JS (webdriver_fully.js, window_chrome.js, etc.)
+            page_info = self._session._get_page(self.timeout, None, False)
+            self.page = page_info.page
+            self.playwright = self._session.playwright
+            self.browser = None  # Not directly accessible in StealthySession
+        else:
+            # Fallback: raw Playwright (no stealth)
+            self.playwright = sync_playwright().start()
+            self.browser = self.playwright.chromium.launch(headless=self.headless)
+            context = self.browser.new_context(
+                viewport={'width': 1920, 'height': 1080},
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            )
+            self.page = context.new_page()
+            self.page.set_default_timeout(self.timeout)
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if self.browser:
-            self.browser.close()
-        if self.playwright:
-            self.playwright.stop()
+        if self.use_stealth and self._session:
+            # Close the page we created manually
+            if self.page:
+                try:
+                    self.page.close()
+                except Exception:
+                    pass
+                self.page = None
+            # Let StealthySession clean up its resources
+            self._session.__exit__(exc_type, exc_val, exc_tb)
+            self._session = None
+        else:
+            # Fallback cleanup for raw Playwright
+            if self.browser:
+                self.browser.close()
+            if self.playwright:
+                self.playwright.stop()
 
     def discover(self, username: Optional[str] = None, password: Optional[str] = None,
                  totp_secret: Optional[str] = None, test_login: bool = False) -> DiscoveryResult:
@@ -311,7 +391,24 @@ class CasinoSelectorDiscovery:
             print("Discovering login selectors...")
             result.login_selectors = self._discover_login_selectors()
 
-            # If credentials provided, attempt login
+            # If no login form found, try to discover the login page URL
+            has_login_form = (
+                result.login_selectors.get('username') and
+                result.login_selectors.get('password')
+            )
+            if not has_login_form:
+                print("No login form found on current page, searching for login page link...")
+                login_page_url = self._discover_login_page()
+                if login_page_url:
+                    print(f"Navigating to login page: {login_page_url}")
+                    self.page.goto(login_page_url, wait_until='networkidle', timeout=self.timeout)
+                    wait_for_load_all_safe(self.page, timeout=1000)
+
+                    # Try discovering login selectors again on the login page
+                    print("Discovering login selectors on login page...")
+                    result.login_selectors = self._discover_login_selectors()
+
+            # If credentials provided, attempt login and discover authenticated selectors
             if test_login and username and password:
                 print("Attempting login to discover authenticated selectors...")
                 login_success = self._attempt_login(username, password, totp_secret, result)
@@ -324,10 +421,8 @@ class CasinoSelectorDiscovery:
                 else:
                     result.errors.append("Login failed - could not discover authenticated selectors")
             else:
-                # Try to discover what we can without authentication
-                print("Discovering selectors without authentication (limited accuracy)...")
-                result.currency_selectors = self._discover_currency_selectors()
-                result.claim_selectors = self._discover_claim_selectors()
+                # Without credentials, only login selectors are meaningful
+                print("Skipping currency/claim discovery (requires authentication)")
 
         except Exception as e:
             result.errors.append(f"Discovery error: {str(e)}")
@@ -434,6 +529,123 @@ class CasinoSelectorDiscovery:
                     continue
 
         return selectors
+
+    def _discover_login_page(self) -> Optional[str]:
+        """
+        Discover the login page URL when no login form is found on the current page.
+
+        Looks for links/buttons with login-related text or hrefs pointing to login pages.
+
+        Returns:
+            Login page URL if found, None otherwise
+        """
+        candidates: List[Tuple[str, float, str]] = []  # (url, confidence, reason)
+
+        # Search for <a> tags with login text or href
+        links = self.page.locator('a').all()
+        for link in links:
+            try:
+                href = link.get_attribute('href') or ''
+                link_text = (link.inner_text() or '').strip().lower()
+                link_class = (link.get_attribute('class') or '').lower()
+                aria_label = (link.get_attribute('aria-label') or '').lower()
+
+                combined_text = f"{link_text} {link_class} {aria_label}"
+
+                # Check text content for login keywords
+                text_match = any(kw in combined_text for kw in self.LOGIN_PAGE_KEYWORDS)
+
+                # Check href for login keywords
+                href_lower = href.lower()
+                href_match = any(kw in href_lower for kw in self.LOGIN_HREF_KEYWORDS)
+
+                if text_match or href_match:
+                    # Build absolute URL
+                    if href.startswith('http'):
+                        url = href
+                    elif href.startswith('/'):
+                        # Relative URL - combine with base
+                        from urllib.parse import urljoin
+                        url = urljoin(self.url, href)
+                    else:
+                        continue  # Skip javascript: or other non-http links
+
+                    # Calculate confidence
+                    confidence = 0.5
+                    reasons = []
+                    if text_match:
+                        confidence += 0.25
+                        reasons.append(f"text matches login keywords: '{link_text[:30]}'")
+                    if href_match:
+                        confidence += 0.25
+                        reasons.append(f"href contains login keyword: '{href[:50]}'")
+
+                    candidates.append((url, confidence, '; '.join(reasons)))
+
+            except Exception:
+                continue
+
+        # Search for buttons that might open login modals or navigate to login
+        buttons = self.page.locator('button').all()
+        for btn in buttons:
+            try:
+                btn_text = (btn.inner_text() or '').strip().lower()
+                btn_class = (btn.get_attribute('class') or '').lower()
+                aria_label = (btn.get_attribute('aria-label') or '').lower()
+                onclick = (btn.get_attribute('onclick') or '').lower()
+                data_href = btn.get_attribute('data-href') or ''
+
+                combined_text = f"{btn_text} {btn_class} {aria_label}"
+
+                if any(kw in combined_text for kw in self.LOGIN_PAGE_KEYWORDS):
+                    # Check if button has a data-href or similar
+                    if data_href:
+                        if data_href.startswith('http'):
+                            url = data_href
+                        else:
+                            from urllib.parse import urljoin
+                            url = urljoin(self.url, data_href)
+                        candidates.append((url, 0.6, f"button with login text has data-href: '{btn_text[:30]}'"))
+                    elif 'login' in onclick or 'signin' in onclick:
+                        # Button might trigger navigation via onclick
+                        # We can't extract URL from JS, but note it exists
+                        print(f"  Found login button with onclick: '{btn_text[:30]}' (cannot extract URL)")
+
+            except Exception:
+                continue
+
+        # Search for divs/spans that might be styled as buttons
+        clickables = self.page.locator('div[role="button"], span[role="button"], [class*="button"]').all()
+        for el in clickables[:50]:  # Limit search
+            try:
+                el_text = (el.inner_text() or '').strip().lower()
+                if len(el_text) > 50:  # Skip elements with too much text
+                    continue
+
+                if any(kw in el_text for kw in self.LOGIN_PAGE_KEYWORDS):
+                    # Check for data attributes that might contain URLs
+                    data_href = el.get_attribute('data-href') or ''
+                    onclick = (el.get_attribute('onclick') or '').lower()
+
+                    if data_href:
+                        from urllib.parse import urljoin
+                        url = urljoin(self.url, data_href) if not data_href.startswith('http') else data_href
+                        candidates.append((url, 0.5, f"clickable element with login text: '{el_text[:30]}'"))
+
+            except Exception:
+                continue
+
+        if not candidates:
+            return None
+
+        # Sort by confidence and return the best match
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        best_url, best_confidence, best_reason = candidates[0]
+
+        print(f"  Found login page candidate: {best_url}")
+        print(f"    Confidence: {best_confidence:.2f}, Reason: {best_reason}")
+
+        return best_url
 
     def _discover_currency_selectors(self) -> Dict[str, List[SelectorCandidate]]:
         """Discover currency/balance display selectors."""
@@ -615,11 +827,11 @@ class CasinoSelectorDiscovery:
 
             # Fill username
             self.page.fill(username_sel, username, timeout=5000)
-            self.page.wait_for_timeout(gaussian_random_delay())
+            self.page.wait_for_timeout(gaussian_random_delay(1500))
 
             # Fill password
             self.page.fill(password_sel, password, timeout=5000)
-            self.page.wait_for_timeout(gaussian_random_delay())
+            self.page.wait_for_timeout(gaussian_random_delay(1500))
 
             # Click submit
             if submit_sel:
@@ -880,15 +1092,23 @@ Examples:
     parser.add_argument('--export', help='Export results to Python config file')
     parser.add_argument('--json', help='Export results to JSON file')
 
+    # Stealth options
+    parser.add_argument('--proxy', help='Proxy server URL (e.g., http://user:pass@host:port)')
+    parser.add_argument('--no-stealth', action='store_true', help='Disable stealth mode (use raw Playwright)')
+    parser.add_argument('--solve-cloudflare', action='store_true', help='Attempt to solve Cloudflare challenges')
+    parser.add_argument('--user-data-dir', help='Browser profile directory for session persistence')
+    parser.add_argument('--geoip', action='store_true', help='Spoof location based on proxy IP')
+    parser.add_argument('--block-webrtc', action='store_true', help='Block WebRTC to prevent IP leaks')
+
     args = parser.parse_args()
 
     # Try to get credentials from environment if not provided
     if args.test_login and not (args.username and args.password):
         try:
-            creds = get_credentials(args.url, twofa=bool(args.totp_secret))
-            args.username = args.username or creds.get('username')
-            args.password = args.password or creds.get('password')
-            args.totp_secret = args.totp_secret or creds.get('twofa')
+            creds: Tuple[str, str, str] = get_credentials(args.url, twofa=bool(args.totp_secret))
+            args.username = args.username or creds[0]
+            args.password = args.password or creds[1]
+            args.totp_secret = args.totp_secret or creds[2]
 
             if not (args.username and args.password):
                 print("⚠ Warning: --test-login specified but credentials not found")
@@ -897,7 +1117,17 @@ Examples:
             print(f"⚠ Warning: Could not get credentials from environment: {e}")
 
     # Run discovery
-    with CasinoSelectorDiscovery(args.url, headless=args.headless, timeout=args.timeout) as discovery:
+    with CasinoSelectorDiscovery(
+        args.url,
+        headless=args.headless,
+        timeout=args.timeout,
+        proxy=args.proxy,
+        use_stealth=not args.no_stealth,
+        solve_cloudflare=args.solve_cloudflare,
+        user_data_dir=args.user_data_dir,
+        geoip=args.geoip,
+        block_webrtc=args.block_webrtc,
+    ) as discovery:
         result = discovery.discover(
             username=args.username,
             password=args.password,
