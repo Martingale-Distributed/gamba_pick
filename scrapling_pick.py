@@ -1065,6 +1065,98 @@ def make_claim_faucet(
     return claim_faucet
 
 
+def make_bonus_rolls_faucet(
+    tab_selector: str,
+    roll_selector: str,
+    currency: str = "UNK",
+    enable_screenshots: bool = False,
+    max_rolls: int = 100,
+    wait_between_ms: int = 1000,
+) -> Callable[[Page], int]:
+    """Create an action that navigates to the bonus tab and performs repeated bonus rolls.
+
+    This action will:
+    - Click the tab (if present) to reveal the bonus rolls UI
+    - Repeatedly click the roll button up to `max_rolls` times
+    - Wait a randomized delay between rolls (centered on `wait_between_ms`)
+    - Stop early if the roll button disappears or if free spins drop to zero (if detectable)
+
+    Returns:
+        Callable[[Page], int]: A page action that returns the number of rolls performed.
+    """
+
+    @screenshot_action
+    def bonus_rolls_action(page: Page) -> int:
+        _ = currency
+        _ = enable_screenshots
+
+        rolls_done = 0
+
+        try:
+            # Try to open the bonus tab if a tab selector is provided
+            if tab_selector:
+                try:
+                    tab = page.locator(tab_selector).first
+                    if tab.count() > 0:
+                        tab.click(delay=gaussian_random_delay(), timeout=3000)
+                        page.wait_for_timeout(500)
+                except Exception:
+                    log.debug("Bonus tab not found or not clickable: %s", tab_selector)
+
+            for i in range(max_rolls):
+                # Try to find the roll button
+                try:
+                    roll_btn = page.locator(roll_selector).first
+                    roll_count = roll_btn.count()
+                except Exception:
+                    log.debug("Error locating roll button: %s", roll_selector)
+                    break
+
+                if not roll_count or roll_count == 0:
+                    log.info("No roll button available (stopping).")
+                    break
+
+                # Click the roll button
+                try:
+                    delay = gaussian_random_delay()
+                    roll_btn.click(delay=delay)
+                    rolls_done += 1
+                    log.info("Performed bonus roll %d/%d", rolls_done, max_rolls)
+                except Exception as e:
+                    log.warning("Failed to click roll button: %s", e)
+                    break
+
+                # Wait a bit for UI to update and to be polite
+                wait_ms = int(max(0, random.gauss(wait_between_ms, max(1, wait_between_ms * 0.1))))
+                page.wait_for_timeout(wait_ms)
+
+                # If we can detect free_spins on the page, stop if zero
+                try:
+                    free_spins_element: Optional[ElementHandle] = page.query_selector(
+                        "span[id=free_spins]"
+                    )
+                    if free_spins_element:
+                        text = free_spins_element.text_content() or "0"
+                        try:
+                            remaining = int(text.strip())
+                            if remaining <= 0:
+                                log.info("No remaining free spins detected (stopping).")
+                                break
+                        except Exception:
+                            # could not parse number; continue
+                            pass
+                except Exception:
+                    pass
+
+            log.info("Finished bonus rolls; total performed: %d", rolls_done)
+        except Exception:
+            log.exception("Unexpected error during bonus rolls action")
+
+        return rolls_done
+
+    return bonus_rolls_action
+*** End Patch
+
 def pick_to_dict_json_safe(pick_obj: Pick) -> Dict[str, Any]:
     """Convert Pick object to JSON-safe dict
 
@@ -1226,6 +1318,11 @@ def main(
     play_keno: bool = False,
     summarize: bool = False,
     enable_screenshots: bool = False,
+    do_bonus_rolls: bool = False,
+    bonus_tab_selector: str | None = None,
+    bonus_roll_selector: str | None = None,
+    max_bonus_rolls: int = 100,
+    bonus_wait_ms: int = 1000,
 ):
     """
     Main function to run the scraper.
@@ -1320,6 +1417,32 @@ def main(
                 )
                 log.info("after claim attempt for %s", pick.url)
 
+                # Optionally run bonus rolls if requested and selectors provided
+                if do_bonus_rolls:
+                    if not bonus_tab_selector or not bonus_roll_selector:
+                        log.warning(
+                            "--bonus-rolls requested but no selectors provided; skipping bonus rolls"
+                        )
+                    else:
+                        bonus_action = make_bonus_rolls_faucet(
+                            tab_selector=bonus_tab_selector,
+                            roll_selector=bonus_roll_selector,
+                            currency=pick.currency,
+                            enable_screenshots=enable_screenshots,
+                            max_rolls=max_bonus_rolls,
+                            wait_between_ms=bonus_wait_ms,
+                        )
+                        try:
+                            _: Response = session.fetch(
+                                f"{pick.url}faucet.php",
+                                page_action=bonus_action,
+                                wait=2000,
+                                timeout=max(10000, max_bonus_rolls * (bonus_wait_ms + 50)),
+                            )
+                            log.info("Completed bonus rolls for %s", pick.url)
+                        except Exception:
+                            log.exception("Error running bonus rolls for %s", pick.url)
+
                 # Check if Response object has a page attribute
                 if play_keno:
                     log.info("About to play keno on %s", pick.url)
@@ -1395,6 +1518,34 @@ if __name__ == "__main__":
         help="enable before/after screenshots for page actions",
         action="store_true",
     )
+    # Bonus rolls options
+    parser.add_argument(
+        "--do-bonus-rolls",
+        help="Navigate to the bonus faucet tab and perform repeated bonus rolls",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--bonus-tab-selector",
+        help="CSS selector to open the bonus tab (required when --do-bonus-rolls is set)",
+        default=None,
+    )
+    parser.add_argument(
+        "--bonus-roll-selector",
+        help="CSS selector for the bonus roll button (required when --do-bonus-rolls is set)",
+        default=None,
+    )
+    parser.add_argument(
+        "--max-bonus-rolls",
+        help="Maximum number of bonus rolls to attempt (default: 100)",
+        type=int,
+        default=100,
+    )
+    parser.add_argument(
+        "--bonus-wait-ms",
+        help="Mean wait time in ms between bonus rolls (default: 1000)",
+        type=int,
+        default=1000,
+    )
     group = parser.add_mutually_exclusive_group()
     group.add_argument(
         "--skip", help="List of picks by currency to skip", nargs="+", default=[]
@@ -1421,4 +1572,9 @@ if __name__ == "__main__":
         args.play_keno,
         args.summarize,
         args.enable_screenshots,
+        args.do_bonus_rolls,
+        args.bonus_tab_selector,
+        args.bonus_roll_selector,
+        args.max_bonus_rolls,
+        args.bonus_wait_ms,
     )
