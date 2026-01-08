@@ -1417,13 +1417,74 @@ def main(
                 )
                 log.info("after claim attempt for %s", pick.url)
 
-                # Optionally run bonus rolls if requested and selectors provided
+                # Optionally run bonus rolls if requested
                 if do_bonus_rolls:
+                    # If selectors not provided, attempt auto-discovery (requires credentials)
                     if not bonus_tab_selector or not bonus_roll_selector:
-                        log.warning(
-                            "--bonus-rolls requested but no selectors provided; skipping bonus rolls"
-                        )
-                    else:
+                        # We can only discover authenticated selectors if we have username/password
+                        try:
+                            if username and password:
+                                from casino_selector_discovery import CasinoSelectorDiscovery
+
+                                log.info("Attempting to discover claim/bonus selectors for %s", pick.url)
+                                try:
+                                    with CasinoSelectorDiscovery(
+                                        pick.url,
+                                        headless=headless,
+                                        timeout=10000,
+                                        proxy=proxy,
+                                        use_stealth=True,
+                                        solve_cloudflare=True,
+                                        user_data_dir=user_data_dir,
+                                    ) as discovery:
+                                        discovery_result = discovery.discover(
+                                            username=username,
+                                            password=password,
+                                            test_login=True,
+                                        )
+
+                                        tab_candidates = discovery_result.claim_selectors.get('tab', [])
+                                        modal_candidates = discovery_result.claim_selectors.get('modal_opener', [])
+                                        claim_btn_candidates = discovery_result.claim_selectors.get('claim_btn', [])
+
+                                        discovered_tab = None
+                                        discovered_roll = None
+
+                                        if tab_candidates:
+                                            discovered_tab = tab_candidates[0].selector
+                                        elif modal_candidates:
+                                            discovered_tab = modal_candidates[0].selector
+
+                                        if claim_btn_candidates:
+                                            discovered_roll = claim_btn_candidates[0].selector
+
+                                        if discovered_tab and discovered_roll:
+                                            bonus_tab_selector = discovered_tab
+                                            bonus_roll_selector = discovered_roll
+                                            log.info(
+                                                "Discovered bonus selectors for %s: tab=%s, roll=%s",
+                                                pick.url,
+                                                bonus_tab_selector,
+                                                bonus_roll_selector,
+                                            )
+                                        else:
+                                            log.warning(
+                                                "Could not discover bonus selectors for %s; skipping bonus rolls",
+                                                pick.url,
+                                            )
+                                except Exception:
+                                    log.exception("Auto-discovery failed for %s", pick.url)
+                            else:
+                                log.warning(
+                                    "--do-bonus-rolls requested but no selectors provided and no credentials available; skipping auto-discovery"
+                                )
+                        except NameError:
+                            log.warning(
+                                "Casino selector discovery not available in this environment; please provide selectors explicitly"
+                            )
+
+                    # If we now have selectors, run the bonus action
+                    if bonus_tab_selector and bonus_roll_selector:
                         bonus_action = make_bonus_rolls_faucet(
                             tab_selector=bonus_tab_selector,
                             roll_selector=bonus_roll_selector,
@@ -1442,6 +1503,8 @@ def main(
                             log.info("Completed bonus rolls for %s", pick.url)
                         except Exception:
                             log.exception("Error running bonus rolls for %s", pick.url)
+                    else:
+                        log.info("No bonus selectors available; skipping bonus rolls for %s", pick.url)
 
                 # Check if Response object has a page attribute
                 if play_keno:
