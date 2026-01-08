@@ -555,14 +555,15 @@ def screenshot_action(func: Callable[[Page], T]) -> Callable[[Page], T]:
         enable_screenshots: bool = False
         enable_states: bool = True
 
-        # Get the function name
-        func_name = func.__name__
+        # Get the function name (be defensive: some call sites may accidentally
+        # pass non-callables like sentinel objects)
+        func_name = getattr(func, "__name__", func.__class__.__name__)
 
         # Extract currency from the closure variables
         currency = "UNK"
-        if func.__closure__:
+        if hasattr(func, "__closure__") and func.__closure__:
             # Map closure variable names to their values
-            closure_vars = func.__code__.co_freevars
+            closure_vars = func.__code__.co_freevars if hasattr(func, "__code__") else ()
             for i, var_name in enumerate(closure_vars):
                 if var_name == "currency":
                     currency = func.__closure__[i].cell_contents
@@ -586,6 +587,10 @@ def screenshot_action(func: Callable[[Page], T]) -> Callable[[Page], T]:
             log.info("Screenshots disabled, skipping before/after screenshots.")
 
         # Execute the original function
+        if not callable(func):
+            raise TypeError(
+                f"screenshot_action expected a callable, got {type(func)!r} ({func!r})"
+            )
         result = func(page)
 
         # Get the account state from the live page.
@@ -1328,7 +1333,8 @@ def main(
                 log.info("Finished processing %s", pick.url)
 
             except Exception as e:
-                log.error("Error fetching %s: %s", pick.url, e)
+                # Include full traceback to make Playwright/Scrapling failures debuggable
+                log.exception("Error fetching %s: %s", pick.url, e)
                 continue
 
     if summarize:
