@@ -1066,11 +1066,11 @@ def make_claim_faucet(
 
 
 def make_bonus_rolls_faucet(
-    tab_selector: str,
-    roll_selector: str,
+    tab_selector: str = "div.faucet-tabs",
+    roll_selector: str = "#process_claim_bonus_faucet",
     currency: str = "UNK",
     enable_screenshots: bool = False,
-    max_rolls: int = 100,
+    max_rolls: int = 300,
     wait_between_ms: int = 1000,
 ) -> Callable[[Page], int]:
     """Create an action that navigates to the bonus tab and performs repeated bonus rolls.
@@ -1105,6 +1105,7 @@ def make_bonus_rolls_faucet(
 
             for i in range(max_rolls):
                 # Try to find the roll button
+                page.wait_for_timeout(gaussian_random_delay(mean=1000, stddev=100))
                 try:
                     roll_btn = page.locator(roll_selector).first
                     roll_count = roll_btn.count()
@@ -1122,6 +1123,13 @@ def make_bonus_rolls_faucet(
                     roll_btn.click(delay=delay)
                     rolls_done += 1
                     log.info("Performed bonus roll %d/%d", rolls_done, max_rolls)
+                    first = page.query_selector(".roll_numbers .first_digit")
+                    second = page.query_selector(".roll_numbers .second_digit")
+                    third = page.query_selector(".roll_numbers .third_digit")
+                    fourth = page.query_selector(".roll_numbers .fourth_digit")
+                    fifth = page.query_selector(".roll_numbers .fifth_digit")
+                    result = first.inner_text() + second.inner_text() + third.inner_text() + fourth.inner_text() + fifth.inner_text()
+                    log.info("Roll result: %s", result)
                 except Exception as e:
                     log.warning("Failed to click roll button: %s", e)
                     break
@@ -1155,7 +1163,7 @@ def make_bonus_rolls_faucet(
         return rolls_done
 
     return bonus_rolls_action
-*** End Patch
+
 
 def pick_to_dict_json_safe(pick_obj: Pick) -> Dict[str, Any]:
     """Convert Pick object to JSON-safe dict
@@ -1270,6 +1278,7 @@ def check_logged_in(res: Response) -> bool:
 
     # Check for logout link by various common patterns
     logout_link1 = res.css(selector="a#process_logout", identifier="logout_link_class")
+    logout_link11 = res.css(selector="#process_logout > li", identifier="logout_link_slide_menu")
     logout_link2 = res.css(selector="a[href*='logout']", identifier="logout_link_href")
     logout_link3 = res.css(selector="a.logout", identifier="logout_link_class").filter(
         lambda el: el.has_text("Logout")
@@ -1278,6 +1287,7 @@ def check_logged_in(res: Response) -> bool:
     return (
         logout_link.get() is not None
         or logout_link1.get() is not None
+        or logout_link11.get() is not None
         or logout_link2.get() is not None
         or logout_link3.get() is not None
     )
@@ -1419,71 +1429,7 @@ def main(
 
                 # Optionally run bonus rolls if requested
                 if do_bonus_rolls:
-                    # If selectors not provided, attempt auto-discovery (requires credentials)
-                    if not bonus_tab_selector or not bonus_roll_selector:
-                        # We can only discover authenticated selectors if we have username/password
-                        try:
-                            if username and password:
-                                from casino_selector_discovery import CasinoSelectorDiscovery
-
-                                log.info("Attempting to discover claim/bonus selectors for %s", pick.url)
-                                try:
-                                    with CasinoSelectorDiscovery(
-                                        pick.url,
-                                        headless=headless,
-                                        timeout=10000,
-                                        proxy=proxy,
-                                        use_stealth=True,
-                                        solve_cloudflare=True,
-                                        user_data_dir=user_data_dir,
-                                    ) as discovery:
-                                        discovery_result = discovery.discover(
-                                            username=username,
-                                            password=password,
-                                            test_login=True,
-                                        )
-
-                                        tab_candidates = discovery_result.claim_selectors.get('tab', [])
-                                        modal_candidates = discovery_result.claim_selectors.get('modal_opener', [])
-                                        claim_btn_candidates = discovery_result.claim_selectors.get('claim_btn', [])
-
-                                        discovered_tab = None
-                                        discovered_roll = None
-
-                                        if tab_candidates:
-                                            discovered_tab = tab_candidates[0].selector
-                                        elif modal_candidates:
-                                            discovered_tab = modal_candidates[0].selector
-
-                                        if claim_btn_candidates:
-                                            discovered_roll = claim_btn_candidates[0].selector
-
-                                        if discovered_tab and discovered_roll:
-                                            bonus_tab_selector = discovered_tab
-                                            bonus_roll_selector = discovered_roll
-                                            log.info(
-                                                "Discovered bonus selectors for %s: tab=%s, roll=%s",
-                                                pick.url,
-                                                bonus_tab_selector,
-                                                bonus_roll_selector,
-                                            )
-                                        else:
-                                            log.warning(
-                                                "Could not discover bonus selectors for %s; skipping bonus rolls",
-                                                pick.url,
-                                            )
-                                except Exception:
-                                    log.exception("Auto-discovery failed for %s", pick.url)
-                            else:
-                                log.warning(
-                                    "--do-bonus-rolls requested but no selectors provided and no credentials available; skipping auto-discovery"
-                                )
-                        except NameError:
-                            log.warning(
-                                "Casino selector discovery not available in this environment; please provide selectors explicitly"
-                            )
-
-                    # If we now have selectors, run the bonus action
+                    bonus_action: Optional[Callable[[Page], int]] = None
                     if bonus_tab_selector and bonus_roll_selector:
                         bonus_action = make_bonus_rolls_faucet(
                             tab_selector=bonus_tab_selector,
@@ -1493,13 +1439,22 @@ def main(
                             max_rolls=max_bonus_rolls,
                             wait_between_ms=bonus_wait_ms,
                         )
+                    else:
+                        bonus_action = make_bonus_rolls_faucet(
+                            currency=pick.currency,
+                            enable_screenshots=enable_screenshots,
+                            max_rolls=max_bonus_rolls,
+                            wait_between_ms=bonus_wait_ms,
+                        )
+                    if bonus_action:
                         try:
                             _: Response = session.fetch(
                                 f"{pick.url}faucet.php",
                                 page_action=bonus_action,
+                                solve_cloudflare=False,
                                 wait=2000,
-                                timeout=max(10000, max_bonus_rolls * (bonus_wait_ms + 50)),
                             )
+                            # timeout=max(10000, max_bonus_rolls * (bonus_wait_ms + 50)),
                             log.info("Completed bonus rolls for %s", pick.url)
                         except Exception:
                             log.exception("Error running bonus rolls for %s", pick.url)
