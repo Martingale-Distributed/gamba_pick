@@ -1,8 +1,10 @@
 import os
+import re
 import pyotp
 import random
 import functools
 import time
+import csv
 
 from argparse import ArgumentParser
 from urllib.parse import urlparse
@@ -70,6 +72,16 @@ class AccountState:
             "free_spins": self.free_spins,
             "time_remaining": self.time_remaining,
         }
+
+
+@dataclass
+class BetHistoryEntry:
+    """Represents a single bet history entry from game_history.php."""
+    time: str          # e.g. "2024-01-15 14:30:22"
+    game: str          # e.g. "Keno", "Dice"
+    bet: float         # wager amount
+    multiplier: float  # e.g. 0.00, 2.50
+    profit: float      # win/loss amount
 
 
 class GameConfig:
@@ -1165,6 +1177,211 @@ def make_bonus_rolls_faucet(
     return bonus_rolls_action
 
 
+def prepare_user_data_dir(user_data_dir: str) -> tuple[str, bool]:
+    """If the Firefox profile is locked (browser running), copy it to a temp dir.
+
+    Returns:
+        tuple: (path_to_use, is_temp) - the path to use and whether it's a temp copy.
+    """
+    import shutil
+    import tempfile
+
+    profile_path = Path(user_data_dir)
+    lock_file = profile_path / "lock"
+
+    if lock_file.exists() or lock_file.is_symlink():
+        log.info(
+            "Firefox profile is locked (browser running). "
+            "Copying profile to temp directory..."
+        )
+        temp_dir = tempfile.mkdtemp(prefix="pick_profile_")
+        # Copy only essential dirs/files for IndexedDB access
+        for item in ["storage", "storage.sqlite", "prefs.js", "permissions.sqlite"]:
+            src = profile_path / item
+            dst = Path(temp_dir) / item
+            if src.exists():
+                if src.is_dir():
+                    shutil.copytree(src, dst)
+                else:
+                    shutil.copy2(src, dst)
+        log.info("Profile copied to %s", temp_dir)
+        return temp_dir, True
+
+    return user_data_dir, False
+
+
+def make_scrape_bet_history_action(
+    currency: str = "UNK",
+) -> tuple[Callable[[Page], None], list["BetHistoryEntry"]]:
+    """Create a page_action that extracts bet history from localforage.
+
+    These pick sites store bet history client-side in the browser's IndexedDB
+    via localforage (keys: 'my_bet_data_large' and 'my_bet_data'). This requires
+    --user-data-dir pointing to the user's actual browser profile.
+
+    Returns:
+        tuple: (page_action_callable, shared_entries_list)
+            The page_action appends parsed entries to the shared list.
+    """
+    entries: list[BetHistoryEntry] = []
+
+    def scrape_bet_history_action(page: Page) -> None:
+        # Read bet data directly from IndexedDB using native browser API
+        # (avoids depending on the localforage JS library being loaded)
+        bet_data = page.evaluate("""() => {
+            function readKey(db, key) {
+                return new Promise((resolve, reject) => {
+                    try {
+                        const tx = db.transaction('keyvaluepairs', 'readonly');
+                        const store = tx.objectStore('keyvaluepairs');
+                        const req = store.get(key);
+                        req.onsuccess = () => resolve(req.result);
+                        req.onerror = () => resolve(null);
+                    } catch(e) { resolve(null); }
+                });
+            }
+            return new Promise((resolve) => {
+                const req = indexedDB.open('localforage');
+                req.onsuccess = async (event) => {
+                    const db = event.target.result;
+                    const large = await readKey(db, 'my_bet_data_large');
+                    const small = await readKey(db, 'my_bet_data');
+                    db.close();
+                    resolve({large: large, small: small});
+                };
+                req.onerror = () => resolve(null);
+                // If the DB doesn't exist, onupgradeneeded fires for version 1
+                req.onupgradeneeded = (event) => {
+                    // DB is empty/new, no data to read
+                    event.target.transaction.abort();
+                    resolve(null);
+                };
+            });
+        }""")
+
+        if not bet_data:
+            log.warning("[%s] Could not open localforage IndexedDB", currency)
+            return
+
+        large_data = bet_data.get("large")
+        small_data = bet_data.get("small")
+
+        # Use whichever has more data, preferring large
+        raw_entries = large_data or small_data or []
+
+        if not raw_entries:
+            log.warning(
+                "[%s] No bet data found in localforage. "
+                "Make sure --user-data-dir points to your browser profile "
+                "that has the bet history.",
+                currency,
+            )
+            return
+
+        log.info("[%s] Found %d entries in localforage", currency, len(raw_entries))
+
+        for item in raw_entries:
+            try:
+                # localforage entries have: game_name, bet_amount, payout, profit,
+                # server_seed, game_id, and optionally timestamp/time
+                game_name = item.get("game_name", "Unknown")
+                bet_amount = str(item.get("bet_amount", "0"))
+                payout = str(item.get("payout", "0"))
+                profit = str(item.get("profit", "0"))
+                time_val = item.get("time", item.get("timestamp", ""))
+                # Convert Unix timestamp to readable datetime
+                try:
+                    time_str = datetime.fromtimestamp(int(time_val)).strftime("%Y-%m-%d %H:%M:%S")
+                except (ValueError, TypeError, OSError):
+                    time_str = str(time_val)
+
+                bet_val = float(bet_amount.replace(",", "").strip())
+                # payout field contains the multiplier display (e.g. "4.02×")
+                payout_str = payout.replace("\u00d7", "").replace("x", "").replace(",", "")
+                # Strip any HTML color spans
+                payout_clean = re.sub(r'<[^>]+>', '', payout_str).strip()
+                multiplier_val = float(payout_clean) if payout_clean else 0.0
+                # Same for profit
+                profit_clean = re.sub(r'<[^>]+>', '', profit.replace(",", "")).strip()
+                profit_val = float(profit_clean) if profit_clean else 0.0
+
+                entries.append(BetHistoryEntry(
+                    time=time_str,
+                    game=game_name,
+                    bet=bet_val,
+                    multiplier=multiplier_val,
+                    profit=profit_val,
+                ))
+            except (ValueError, TypeError, KeyError) as e:
+                log.debug("[%s] Skipping entry: %s (data: %s)", currency, e, str(item)[:100])
+                continue
+
+        log.info("[%s] Parsed %d bet history entries from localforage", currency, len(entries))
+
+    return scrape_bet_history_action, entries
+
+
+def save_bet_history_csv(entries: list["BetHistoryEntry"], currency: str) -> str:
+    """Save bet history entries to a CSV file, merging with existing data.
+
+    Args:
+        entries: List of BetHistoryEntry objects to save.
+        currency: Currency code used for the filename.
+
+    Returns:
+        str: Path to the saved CSV file.
+    """
+    directory = Path("bet_history")
+    directory.mkdir(exist_ok=True)
+
+    prefix = currency.upper()
+    filepath = directory / f"{prefix}.csv"
+
+    # Load existing entries for dedup
+    existing_keys: set[str] = set()
+    existing_rows: list[BetHistoryEntry] = []
+    if filepath.exists():
+        with open(filepath, "r", newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                try:
+                    entry = BetHistoryEntry(
+                        time=row["time"],
+                        game=row["game"],
+                        bet=float(row["bet"]),
+                        multiplier=float(row["multiplier"]),
+                        profit=float(row["profit"]),
+                    )
+                    key = f"{entry.time}|{entry.game}|{entry.bet}"
+                    if key not in existing_keys:
+                        existing_keys.add(key)
+                        existing_rows.append(entry)
+                except (KeyError, ValueError) as e:
+                    log.warning("Skipping malformed CSV row: %s", e)
+
+    # Merge new entries, dedup by time+game+bet
+    new_count = 0
+    for entry in entries:
+        key = f"{entry.time}|{entry.game}|{entry.bet}"
+        if key not in existing_keys:
+            existing_keys.add(key)
+            existing_rows.append(entry)
+            new_count += 1
+
+    # Sort by time descending (newest first)
+    existing_rows.sort(key=lambda e: e.time, reverse=True)
+
+    # Write all entries
+    with open(filepath, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["time", "game", "bet", "multiplier", "profit"])
+        for entry in existing_rows:
+            writer.writerow([entry.time, entry.game, entry.bet, entry.multiplier, entry.profit])
+
+    log.info("Saved %d entries (%d new) to %s", len(existing_rows), new_count, filepath)
+    return str(filepath)
+
+
 def pick_to_dict_json_safe(pick_obj: Pick) -> Dict[str, Any]:
     """Convert Pick object to JSON-safe dict
 
@@ -1333,6 +1550,7 @@ def main(
     bonus_roll_selector: str | None = None,
     max_bonus_rolls: int = 100,
     bonus_wait_ms: int = 1000,
+    scrape_history: bool = False,
 ):
     """
     Main function to run the scraper.
@@ -1350,6 +1568,13 @@ def main(
     Returns:
         None
     """
+    # If scraping history with a user-data-dir, prepare profile (copy if locked)
+    temp_profile_dir: str | None = None
+    if scrape_history and user_data_dir:
+        user_data_dir, is_temp = prepare_user_data_dir(user_data_dir)
+        if is_temp:
+            temp_profile_dir = user_data_dir
+
     finished_picks: List[Pick] = []
     tries: Dict[str, int] = {x.url: 0 for x in picks}
     while len(picks) > 0:
@@ -1371,19 +1596,13 @@ def main(
                 enable_screenshots=enable_screenshots,
             )
 
-        additional_args = {}
-        if user_data_dir is not None:
-            additional_args["user_data_dir"] = user_data_dir
-        else:
-            additional_args = {}
-
         with StealthySession(
             proxy=proxy,
             headless=headless,
             humanize=True,
             solve_cloudflare=True,
             google_search=False,
-            additional_args=additional_args,
+            user_data_dir=user_data_dir or "",
         ) as session:
             try:
                 login_response: Response = session.fetch(
@@ -1392,7 +1611,24 @@ def main(
                     wait=3000,
                 )
 
-                if check_logged_in(login_response):
+                logged_in = check_logged_in(login_response)
+
+                # If login response was a redirect (302), the Response body
+                # won't contain logout links. Fetch the main page to verify.
+                if not logged_in:
+                    log.info(
+                        "Login check failed on initial response (status %s), "
+                        "verifying via main page...",
+                        login_response.status,
+                    )
+                    verify_response: Response = session.fetch(
+                        pick.url,
+                        wait=2000,
+                        solve_cloudflare=False,
+                    )
+                    logged_in = check_logged_in(verify_response)
+
+                if logged_in:
                     finished_picks.append(pick)
                     log.info("Logged in to %s successfully", pick.url)
                 else:
@@ -1403,6 +1639,35 @@ def main(
                     continue
 
                 log.debug("%s", pick)
+
+                if scrape_history:
+                    log.info("Scraping bet history for %s...", pick.currency)
+                    history_action, history_entries = make_scrape_bet_history_action(
+                        currency=pick.currency,
+                    )
+                    try:
+                        # Navigate to game_history.php where localforage JS is loaded
+                        session.fetch(
+                            f"{pick.url}game_history.php",
+                            page_action=history_action,
+                            network_idle=True,
+                            wait=3000,
+                            timeout=60000,
+                            solve_cloudflare=False,
+                        )
+                    except Exception:
+                        log.exception("[%s] Error extracting bet history", pick.currency)
+                    if history_entries:
+                        save_bet_history_csv(history_entries, pick.currency)
+                        log.info("[%s] Total: %d entries exported", pick.currency, len(history_entries))
+                    else:
+                        log.warning(
+                            "No bet history found for %s. "
+                            "Bet history is stored in your browser's local storage. "
+                            "Use --user-data-dir to point to your browser profile.",
+                            pick.url,
+                        )
+                    continue
 
                 if skip_claim:
                     log.info("Skipping claim as per --skip-claim")
@@ -1483,6 +1748,12 @@ def main(
 
     save_picks(finished_picks)
 
+    # Clean up temp profile copy if we made one
+    if temp_profile_dir:
+        import shutil
+        shutil.rmtree(temp_profile_dir, ignore_errors=True)
+        log.info("Cleaned up temp profile copy: %s", temp_profile_dir)
+
 
 def filter_picks(all_picks: List[Pick], only: List[str], skip: List[str]) -> List[Pick]:
     """
@@ -1510,7 +1781,11 @@ if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--proxy", help="proxy url to use", default=None)
     parser.add_argument(
-        "--user-data-dir", help="path to user data directory", default=None
+        "--user-data-dir",
+        help="path to Firefox profile directory (required for --scrape-history). "
+        "Linux: ~/.mozilla/firefox/*.default-release, "
+        "Windows: %%APPDATA%%\\Mozilla\\Firefox\\Profiles\\*.default-release",
+        default=None,
     )
     parser.add_argument("--headless", help="run in headless mode", action="store_true")
     parser.add_argument(
@@ -1564,6 +1839,11 @@ if __name__ == "__main__":
         type=int,
         default=1000,
     )
+    parser.add_argument(
+        "--scrape-history",
+        help="Scrape full bet history from game_history.php and save to CSV (skips claim/keno/bonus)",
+        action="store_true",
+    )
     group = parser.add_mutually_exclusive_group()
     group.add_argument(
         "--skip", help="List of picks by currency to skip", nargs="+", default=[]
@@ -1573,6 +1853,23 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
+
+    # Load environment variables from .env or picks.env if present
+    for env_file in ["picks.env", ".env"]:
+        env_path = Path(env_file)
+        if env_path.exists():
+            with open(env_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, _, value = line.partition("=")
+                    key = key.strip()
+                    value = value.strip()
+                    if key and key not in os.environ:
+                        os.environ[key] = value
+            log.info("Loaded environment from %s", env_file)
+            break
 
     all_picks = load_picks()
     if not all_picks:
@@ -1595,4 +1892,5 @@ if __name__ == "__main__":
         args.bonus_roll_selector,
         args.max_bonus_rolls,
         args.bonus_wait_ms,
+        args.scrape_history,
     )
