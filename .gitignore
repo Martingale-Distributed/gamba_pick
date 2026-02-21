@@ -107,3 +107,5 @@ logged_in_data/
 picks_data/
 picks.env
 .vscode/
+.omc/
+bet_history/
