@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Pick Sites - Export Bet History
 // @namespace    https://github.com/lothrop/gamba_pick
-// @version      1.0
-// @description  Export bet history from *pick sites to CSV via localforage/IndexedDB
+// @version      1.1
+// @description  Export bet history from *pick sites to CSV or raw JSON via localforage/IndexedDB
 // @author       lothrop
 // @match        https://tonpick.game/*
 // @match        https://tronpick.io/*
@@ -138,8 +138,8 @@
         return lines.join("\n");
     }
 
-    function downloadCsv(csv, filename) {
-        const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    function downloadFile(content, filename, mimeType) {
+        const blob = new Blob([content], { type: mimeType });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
@@ -153,71 +153,103 @@
         }, 100);
     }
 
-    async function exportHistory() {
-        const btn = document.getElementById("bet-export-btn");
-        if (btn) {
-            btn.textContent = "Exporting...";
-            btn.disabled = true;
+    function setButtonState(btn, text, resetLabel, timeout) {
+        if (!btn) return;
+        btn.textContent = text;
+        btn.disabled = true;
+        if (resetLabel) {
+            setTimeout(() => { btn.textContent = resetLabel; btn.disabled = false; }, timeout || 3000);
         }
+    }
+
+    async function exportCsv() {
+        const btn = document.getElementById("bet-export-csv-btn");
+        setButtonState(btn, "Exporting...", null);
 
         try {
             const rawEntries = await getBetData();
             if (!rawEntries || rawEntries.length === 0) {
-                const msg = "No bet history found in browser storage for this site.";
-                console.warn("[BetExport]", msg);
-                if (btn) btn.textContent = "No Data Found";
-                setTimeout(() => { if (btn) { btn.textContent = "Export History"; btn.disabled = false; } }, 3000);
+                setButtonState(btn, "No Data Found", "Export CSV", 3000);
                 return;
             }
-
             const entries = parseEntries(rawEntries);
             const csv = entriesToCsv(entries);
-            const filename = `${currency}_bet_history.csv`;
-            downloadCsv(csv, filename);
-
-            console.log(`[BetExport] Exported ${entries.length} entries to ${filename}`);
-            if (btn) btn.textContent = `Exported ${entries.length} bets`;
-            setTimeout(() => { if (btn) { btn.textContent = "Export History"; btn.disabled = false; } }, 3000);
+            downloadFile(csv, `${currency}_bet_history.csv`, "text/csv;charset=utf-8;");
+            console.log(`[BetExport] Exported ${entries.length} entries to CSV`);
+            setButtonState(btn, `${entries.length} bets`, "Export CSV", 3000);
         } catch (e) {
-            console.error("[BetExport] Export failed:", e);
-            if (btn) btn.textContent = "Export Failed";
-            setTimeout(() => { if (btn) { btn.textContent = "Export History"; btn.disabled = false; } }, 3000);
+            console.error("[BetExport] CSV export failed:", e);
+            setButtonState(btn, "Export Failed", "Export CSV", 3000);
         }
     }
 
-    // Create floating export button
-    function createButton() {
+    async function exportJson() {
+        const btn = document.getElementById("bet-export-json-btn");
+        setButtonState(btn, "Exporting...", null);
+
+        try {
+            const rawEntries = await getBetData();
+            if (!rawEntries || rawEntries.length === 0) {
+                setButtonState(btn, "No Data Found", "Export JSON", 3000);
+                return;
+            }
+            const json = JSON.stringify(rawEntries, null, 2);
+            downloadFile(json, `${currency}_bet_history.json`, "application/json;charset=utf-8;");
+            console.log(`[BetExport] Exported ${rawEntries.length} raw entries to JSON`);
+            setButtonState(btn, `${rawEntries.length} entries`, "Export JSON", 3000);
+        } catch (e) {
+            console.error("[BetExport] JSON export failed:", e);
+            setButtonState(btn, "Export Failed", "Export JSON", 3000);
+        }
+    }
+
+    function makeButton(id, label, color, hoverColor, onClick) {
         const btn = document.createElement("button");
-        btn.id = "bet-export-btn";
-        btn.textContent = "Export History";
+        btn.id = id;
+        btn.textContent = label;
         btn.style.cssText = [
+            "padding: 8px 16px",
+            `background: ${color}`,
+            "color: white",
+            "border: none",
+            "border-radius: 6px",
+            "font-size: 13px",
+            "font-weight: 600",
+            "cursor: pointer",
+            "transition: background 0.2s",
+        ].join(";");
+        btn.addEventListener("mouseenter", () => { btn.style.background = hoverColor; });
+        btn.addEventListener("mouseleave", () => { btn.style.background = color; });
+        btn.addEventListener("click", onClick);
+        return btn;
+    }
+
+    // Create floating export buttons
+    function createButtons() {
+        const container = document.createElement("div");
+        container.style.cssText = [
             "position: fixed",
             "bottom: 20px",
             "right: 20px",
             "z-index: 99999",
-            "padding: 10px 20px",
-            "background: #2563eb",
-            "color: white",
-            "border: none",
-            "border-radius: 8px",
-            "font-size: 14px",
-            "font-weight: 600",
-            "cursor: pointer",
+            "display: flex",
+            "gap: 8px",
             "box-shadow: 0 4px 12px rgba(0,0,0,0.3)",
-            "transition: background 0.2s",
+            "border-radius: 8px",
+            "padding: 6px",
+            "background: rgba(0,0,0,0.6)",
         ].join(";");
 
-        btn.addEventListener("mouseenter", () => { btn.style.background = "#1d4ed8"; });
-        btn.addEventListener("mouseleave", () => { btn.style.background = "#2563eb"; });
-        btn.addEventListener("click", exportHistory);
+        container.appendChild(makeButton("bet-export-csv-btn", "Export CSV", "#2563eb", "#1d4ed8", exportCsv));
+        container.appendChild(makeButton("bet-export-json-btn", "Export JSON", "#059669", "#047857", exportJson));
 
-        document.body.appendChild(btn);
+        document.body.appendChild(container);
     }
 
-    // Wait for page to be ready, then add button
+    // Wait for page to be ready, then add buttons
     if (document.readyState === "loading") {
-        document.addEventListener("DOMContentLoaded", createButton);
+        document.addEventListener("DOMContentLoaded", createButtons);
     } else {
-        createButton();
+        createButtons();
     }
 })();
