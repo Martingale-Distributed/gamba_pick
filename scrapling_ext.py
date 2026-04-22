@@ -3,10 +3,12 @@ from casino import (
     CasinoAccountState,
     GenericClaimConfig,
     MTBClaimConfig,
+    SimpleClaimConfig,
     get_credentials,
     make_modal_tab_button,
     make_get_casino_account_state,
     make_generic_accept_or_close_modals,
+    make_simple_claim_button,
     make_login_action_factory,
     wait_for_load_all_safe,
 )
@@ -77,6 +79,15 @@ def make_casino_automation(
             btn_selector=config.claim_config.btn_selector,
             close_btn_selector=config.claim_config.close_btn_selector,
         )
+    elif config.claim_pattern == "simple":
+        if not isinstance(config.claim_config, SimpleClaimConfig):
+            raise ValueError(
+                "claim_pattern is 'simple' but claim_config is not SimpleClaimConfig"
+            )
+        claim_bonus_action = make_simple_claim_button(
+            btn_selector=config.claim_config.btn_selector,
+            post_claim_close_selector=config.claim_config.post_claim_close_selector,
+        )
     else:  # generic
         if not isinstance(config.claim_config, GenericClaimConfig):
             raise ValueError(
@@ -135,7 +146,7 @@ def make_casino_automation(
                 log.info(f"[{config.name}] Attempting to claim daily bonus...")
                 try:
                     result = claim_bonus_action(page)
-                    if config.claim_pattern == "generic":
+                    if config.claim_pattern in ("generic", "simple"):
                         if result:
                             log.info(
                                 f"[{config.name}] Daily bonus claimed successfully"
@@ -182,6 +193,7 @@ def make_casino_automation(
             humanize=True,
             load_dom=True,
             google_search=False,
+            geoip=config.geoip,
             additional_args=additional_args,
         ) as session:
             log.info(f"[{config.name}] Fetching {config.login_url}...")

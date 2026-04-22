@@ -242,22 +242,125 @@ def make_handle_google_one_tap_popup(
     return handle_google_one_tap_popup
 
 
-def wait_for_load_all_safe(page: Page, timeout: int = 500) -> None:
-    """Wait for the page to be fully loaded with error handling.
+def make_grant_geolocation_permission(
+    origin: Optional[str] = None,
+    reload_after: bool = True,
+) -> Callable[[Page], None]:
+    """Make a page action that grants geolocation permission WITHOUT overriding coords.
+
+    For the "legitimate user on their own laptop" case: we want the site to
+    receive the browser's real, naturally-derived location (from Camoufox's
+    `geoip=True` mode, system geoclue, or whatever the underlying Firefox
+    provider resolves). Overriding coords via `set_geolocation` would defeat
+    that by forcing Playwright's synthetic value into `navigator.geolocation`,
+    creating a mismatch with IP-level and WebRTC-level location signals that
+    compliance services like GeoComply cross-check.
+
+    This helper only pre-authorizes the permission (so the blocking prompt
+    doesn't appear) and reloads the page so the site re-queries with the
+    permission now granted.
+
     Args:
-        page (Page): The Playwright page object.
-        timeout (int): Maximum wait time in milliseconds.
+        origin: optional origin scope for the permission (e.g.
+            "https://example.com"). If None, granted context-wide.
+        reload_after: reload so the site picks up the now-granted
+            permission. Leave True unless the caller is orchestrating
+            their own reload.
+    """
+
+    def grant_geolocation_permission(page: Page) -> None:
+        try:
+            context = page.context
+            perms_kwargs = {"origin": origin} if origin else {}
+            context.grant_permissions(["geolocation"], **perms_kwargs)
+            log.info(
+                "Geolocation permission granted%s (coords will flow from browser's native provider)",
+                f" for origin {origin}" if origin else "",
+            )
+            if reload_after:
+                page.reload()
+                wait_for_load_all_safe(page)
+        except Exception as e:
+            log.warning("Could not grant geolocation permission: %s", str(e))
+
+    return grant_geolocation_permission
+
+
+def make_set_geolocation(
+    latitude: float,
+    longitude: float,
+    accuracy: float = 100.0,
+    origin: Optional[str] = None,
+    reload_after: bool = True,
+) -> Callable[[Page], None]:
+    """Make a page action that grants geolocation permission and sets coords.
+
+    Sweepstakes casinos geo-gate by US state. Playwright browser contexts
+    start with no geolocation and no permission, so the site's first
+    `navigator.geolocation` call either blocks on a permission prompt or
+    fails outright and the site reports "outside allowed jurisdiction."
+    This helper pre-authorizes the permission and fixes the context's
+    location, then (by default) reloads the page so the site picks up the
+    new coordinates without the prompt ever firing.
+
+    Args:
+        latitude, longitude: coordinates to report.
+        accuracy: reported accuracy in meters (100m is typical for IP-geo).
+        origin: optional origin to scope the permission grant to (e.g.
+            "https://spinquest.com"). If None, granted context-wide.
+        reload_after: reload the page after setting; leave True unless the
+            caller wants to defer the reload for their own orchestration.
+    """
+
+    def set_geolocation(page: Page) -> None:
+        try:
+            context = page.context
+            perms_kwargs = {"origin": origin} if origin else {}
+            context.grant_permissions(["geolocation"], **perms_kwargs)
+            context.set_geolocation(
+                {
+                    "latitude": latitude,
+                    "longitude": longitude,
+                    "accuracy": accuracy,
+                }
+            )
+            log.info(
+                "Geolocation granted + set to (%.6f, %.6f, +/-%.0fm)",
+                latitude,
+                longitude,
+                accuracy,
+            )
+            if reload_after:
+                page.reload()
+                wait_for_load_all_safe(page)
+        except Exception as e:
+            log.warning("Could not configure geolocation: %s", str(e))
+
+    return set_geolocation
+
+
+def wait_for_load_all_safe(
+    page: Page, timeout: int = 500, full_load_timeout: int = 10000
+) -> None:
+    """Wait for the page to be fully loaded with error handling.
+
+    Args:
+        page: The Playwright page object.
+        timeout: Max wait (ms) for the `networkidle` state. Short by design —
+            treated as "give it up to this long to settle, then give up."
+        full_load_timeout: Max wait (ms) for the `load` and `domcontentloaded`
+            states. Previously unbounded (Playwright default = 30s each), which
+            turned a stalled post-login navigation into a ~60s apparent hang.
+            A bounded wait surfaces the issue faster; the caller sees a
+            warning line and continues.
     """
     try:
-        # These two are not usually problematic so we don't impose a timeout.
-        page.wait_for_load_state("load")
-        page.wait_for_load_state("domcontentloaded")
-        # This can be considered just a wait for `timeout` ms if networkidle doesn't happen.
-        # Which should be considered the most likely case.
+        page.wait_for_load_state("load", timeout=full_load_timeout)
+        page.wait_for_load_state("domcontentloaded", timeout=full_load_timeout)
         try:
             page.wait_for_load_state("networkidle", timeout=timeout)
         except PlaywrightError as _:
-            # Sometimes networkidle doesn't happen, ignore
+            # Sometimes networkidle doesn't happen, ignore.
             pass
     except PlaywrightError as e:
         log.warning("Page did not fully load within timeout: %s", str(e))
@@ -575,6 +678,53 @@ def make_generic_accept_or_close_modals(
     return accept_or_close_modals
 
 
+def make_simple_claim_button(
+    btn_selector: str,
+    post_claim_close_selector: Optional[str] = None,
+) -> Callable[[Page], bool]:
+    """Make a page action that clicks a single on-page claim button.
+
+    Args:
+        btn_selector: Selector for the claim button.
+        post_claim_close_selector: Optional selector for a confirmation
+            modal's close button, clicked after a successful claim.
+
+    Returns:
+        A callable that returns True if the button was clicked, False if it
+        wasn't present (already claimed today, or wrong page state) or the
+        click failed. Never raises.
+    """
+
+    def simple_claim(page: Page) -> bool:
+        try:
+            btn: Locator = page.locator(btn_selector).first
+            expect(btn).to_be_visible(timeout=5000)
+        except (AssertionError, PlaywrightError):
+            log.info("Claim button not visible; daily bonus likely already claimed")
+            return False
+
+        try:
+            btn.click(delay=gaussian_random_delay(), timeout=5000)
+            log.info("Clicked claim button")
+        except PlaywrightError as e:
+            log.warning("Claim button click failed: %s", str(e))
+            return False
+
+        wait_for_load_all_safe(page, timeout=3000)
+
+        if post_claim_close_selector:
+            try:
+                close_btn = page.locator(post_claim_close_selector).first
+                if close_btn.count() > 0 and close_btn.is_visible():
+                    close_btn.click(delay=gaussian_random_delay(), timeout=3000)
+            except PlaywrightError:
+                pass
+
+        return True
+
+    return simple_claim
+
+
 def url_to_env_prefix(url: str) -> str:
     """Convert a URL to an environment variable prefix.
 
@@ -819,6 +969,19 @@ class GenericClaimConfig:
 
 
 @dataclass
+class SimpleClaimConfig:
+    """Configuration for a single-button claim pattern.
+
+    For sites where claiming is just "find and click one button on the page",
+    with no wallet modal to open first and no cascade of other modals to
+    dismiss afterward — e.g. SpinQuest's homepage "claim now" CTA.
+    """
+
+    btn_selector: str  # Claim button selector
+    post_claim_close_selector: Optional[str] = None  # Optional confirmation-modal close
+
+
+@dataclass
 class CasinoConfig:
     """Complete configuration for a casino automation script.
 
@@ -838,8 +1001,8 @@ class CasinoConfig:
     currency_display: CurrencyDisplayConfig
 
     # Required: Bonus claiming configuration (choose one pattern)
-    claim_config: MTBClaimConfig | GenericClaimConfig
-    claim_pattern: Literal["mtb", "generic"] = "mtb"
+    claim_config: MTBClaimConfig | GenericClaimConfig | SimpleClaimConfig
+    claim_pattern: Literal["mtb", "generic", "simple"] = "mtb"
 
     # Optional: Custom balance parser
     custom_balance_parser: Optional[Callable[[Page], Dict[str, Optional[float]]]] = None
@@ -860,3 +1023,12 @@ class CasinoConfig:
 
     # Optional: Whether 2FA is required
     requires_2fa: bool = False
+
+    # Optional: Enable Camoufox's IP-derived geolocation mode.
+    # When True, Camoufox derives coords + timezone + locale from the
+    # connection's real IP, keeping all fingerprint signals internally
+    # consistent. Use for sites with regulatory-grade geo validation
+    # (GeoComply, etc.) where the user is legitimately in an allowed
+    # jurisdiction on their own IP. Leave False for adversarial
+    # geo-spoofing (in which case use make_set_geolocation explicitly).
+    geoip: bool = False
