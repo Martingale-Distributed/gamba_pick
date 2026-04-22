@@ -1,3 +1,4 @@
+import contextlib
 import os
 import re
 import pyotp
@@ -713,6 +714,22 @@ def parse_account_state_page(
     free_spins_element: Optional[ElementHandle] = page.query_selector(
         selector="span[id=free_spins]"
     )
+
+    # If none of the faucet-specific elements exist, we're not on a page that
+    # exposes account state (e.g. login.php or the post-login landing page).
+    # Returning a zero-filled AccountState here would overwrite real state in
+    # Pick.update() and poison history with bogus [0, 0, 0, 0, 0] entries.
+    if (
+        wagered_element is None
+        and target_element is None
+        and remaining_claims_element is None
+    ):
+        log.debug(
+            "[%s] No faucet state elements found on page %s; skipping state parse",
+            currency,
+            page.url,
+        )
+        return None
 
     flipclock_locator: Locator = page.locator(flipclock_selector)
 
@@ -1484,16 +1501,23 @@ def load_picks(directory: str = "picks_data") -> list[Pick]:
 
 def check_logged_in(res: Response) -> bool:
     """
-    Check if the user is logged in by looking for a logout link in the response.
-    Args:
-        res (Response): The response object to check.
-    Returns:
-        bool: True if logged in, False otherwise.
-    """
-    # Check for logout button by class
-    logout_link = res.css(selector="li[class='lg_logout_btn']", identifier="logout_btn")
+    Check if the user is logged in.
 
-    # Check for logout link by various common patterns
+    Primary signal: the server redirects authenticated users off /login.php
+    (usually to /faucet.php). If the final response URL is no longer on the
+    login page, the session cookie was accepted. The older DOM-based check
+    looked for logout <a>/<li> elements, but those are rendered client-side
+    by JS and aren't in the fetched HTML, so it reported "failed" even
+    after a successful login.
+
+    DOM-based checks are kept as a fallback for cases where URL info is
+    unavailable (e.g. a Response constructed without one).
+    """
+    url = (getattr(res, "url", None) or "").lower()
+    if url and "login.php" not in url:
+        return True
+
+    logout_link = res.css(selector="li[class='lg_logout_btn']", identifier="logout_btn")
     logout_link1 = res.css(selector="a#process_logout", identifier="logout_link_class")
     logout_link11 = res.css(selector="#process_logout > li", identifier="logout_link_slide_menu")
     logout_link2 = res.css(selector="a[href*='logout']", identifier="logout_link_href")
@@ -1533,6 +1557,32 @@ def summarize_picks(picks: List[Pick]) -> None:
     )
     for pick in picks:
         log.info(pick)
+
+
+@contextlib.contextmanager
+def safe_stealthy_session(**kwargs):
+    """StealthySession wrapper that swallows cleanup errors.
+
+    Why: if the browser dies mid-fetch (Cloudflare hang that the user kills,
+    Playwright TargetClosedError, etc.), the inner exception is caught by
+    the caller, but StealthySession.__exit__ -> context.close() then throws
+    "Connection closed while reading from the driver" because the driver
+    process is already gone. That second exception escapes any try/except
+    inside the `with` body and crashes main. Swallowing it lets the loop
+    move on to the next pick.
+    """
+    session = StealthySession(**kwargs)
+    session.__enter__()
+    try:
+        yield session
+    finally:
+        try:
+            session.__exit__(None, None, None)
+        except Exception as teardown_err:
+            log.warning(
+                "Session cleanup failed (browser likely crashed or was killed): %s",
+                teardown_err,
+            )
 
 
 def main(
@@ -1596,7 +1646,7 @@ def main(
                 enable_screenshots=enable_screenshots,
             )
 
-        with StealthySession(
+        with safe_stealthy_session(
             proxy=proxy,
             headless=headless,
             humanize=True,
