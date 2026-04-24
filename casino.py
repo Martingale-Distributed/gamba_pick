@@ -654,47 +654,179 @@ def google_oauth_login_page_make() -> Tuple[
             (page action, always-False ``was_claim_attempted``).
     """
 
+    def _drive_google_popup(popup: Page) -> None:
+        """Walk an OAuth popup through the account chooser and any consent.
+
+        Assumes a pre-established Google session (from ``--setup``) — so the
+        popup typically shows the account chooser followed by an optional
+        consent/continue screen, then self-closes. We poll because the
+        transition between screens is async and Google's exact markup
+        varies across account states.
+
+        Falls back to email/password if ``GOOGLE_EMAIL`` / ``GOOGLE_PASSWORD``
+        are set and the popup demands credentials (rare once the profile is
+        warm).
+        """
+        try:
+            popup.wait_for_load_state("domcontentloaded", timeout=10000)
+        except PlaywrightError:
+            pass
+
+        clicked_account = False
+        clicked_confirm = False
+        # Poll for up to ~30s (60 * 500ms). The popup closing terminates early.
+        for _ in range(60):
+            if popup.is_closed():
+                log.info("Google OAuth popup closed")
+                return
+
+            # 1. Account chooser — `data-identifier` carries the account's
+            # email and is the stable hook across Google's account-picker
+            # revisions. Click the first visible account once.
+            if not clicked_account:
+                try:
+                    account = popup.locator("[data-identifier]").first
+                    if account.count() > 0 and account.is_visible():
+                        account.click(
+                            delay=gaussian_random_delay(), timeout=5000
+                        )
+                        log.info("Clicked first Google account in chooser")
+                        clicked_account = True
+                        popup.wait_for_timeout(1500)
+                        continue
+                except PlaywrightError:
+                    pass
+
+            # 2. Consent / continue screen. Google uses different verbs
+            # depending on scope/state; try the common ones.
+            if not clicked_confirm:
+                for text in ("Continue", "Allow", "Confirm", "Yes"):
+                    try:
+                        btn = popup.locator(f'button:has-text("{text}")').first
+                        if btn.count() > 0 and btn.is_visible():
+                            btn.click(
+                                delay=gaussian_random_delay(), timeout=5000
+                            )
+                            log.info("Clicked '%s' on OAuth consent screen", text)
+                            clicked_confirm = True
+                            popup.wait_for_timeout(1500)
+                            break
+                    except PlaywrightError:
+                        continue
+                if clicked_confirm:
+                    continue
+
+            # 3. Fallback: email/password prompt (only if the saved session
+            # went stale and credentials are provided).
+            email = os.getenv("GOOGLE_EMAIL")
+            if email and not clicked_account:
+                try:
+                    email_input = popup.locator('input[type="email"]').first
+                    if email_input.count() > 0 and email_input.is_visible():
+                        email_input.fill(email, timeout=3000)
+                        popup.locator('button:has-text("Next")').first.click(
+                            delay=gaussian_random_delay(), timeout=3000
+                        )
+                        log.info("Entered Google email in popup")
+                        popup.wait_for_timeout(1500)
+                        continue
+                except PlaywrightError:
+                    pass
+            password = os.getenv("GOOGLE_PASSWORD")
+            if password:
+                try:
+                    pw_input = popup.locator('input[type="password"]').first
+                    if pw_input.count() > 0 and pw_input.is_visible():
+                        pw_input.fill(password, timeout=3000)
+                        popup.locator('button:has-text("Next")').first.click(
+                            delay=gaussian_random_delay(), timeout=3000
+                        )
+                        log.info("Entered Google password in popup")
+                        popup.wait_for_timeout(1500)
+                        continue
+                except PlaywrightError:
+                    pass
+
+            popup.wait_for_timeout(500)
+
+        log.warning("Google OAuth popup still open after polling window")
+
     def google_login_page(page: Page):
-        """Perform Google OAuth login on the given page."""
+        """Perform Google OAuth login on the given page.
+
+        Handles two flows:
+          1. **Popup** (new tab/window opens for the OAuth): common on sites
+             that use a JS ``window.open()`` for the SSO button. The popup
+             is driven via the account chooser + consent screens; the main
+             page finishes its callback when the popup closes.
+          2. **Same-tab redirect**: the main page navigates to
+             ``accounts.google.com`` and back. Legacy fallback — uses
+             ``GOOGLE_EMAIL`` / ``GOOGLE_PASSWORD`` from env if the session
+             isn't already established.
+        """
         page.wait_for_load_state("domcontentloaded", timeout=5000)
 
         # Some login pages (e.g. Zula) gate the Google button behind
-        # Cloudflare Turnstile — it stays disabled until the challenge
-        # resolves. Wait for the Turnstile token to be populated before
-        # attempting to click.
+        # Cloudflare Turnstile — even if the button isn't HTML-disabled,
+        # clicking before the widget goes green triggers a hard reject.
         wait_for_turnstile(page, timeout=30000)
 
         google_button_selectors = [
+            "button.sso-button--gg",          # Zula-style SSO button class
+            "button:has-text('Sign in with Google')",
             "button:has-text('Google')",
             "a:has-text('Google')",
-            "button:has-text('Sign in with Google')",
             "[class*='google'][class*='login']",
             "[id*='google'][id*='login']",
         ]
 
-        google_button_clicked = False
-        for selector in google_button_selectors:
-            try:
-                # Generous timeout: after Turnstile resolves, the button
-                # may still take a moment to become enabled, and the click
-                # itself triggers navigation which Playwright waits on.
-                page.locator(selector).first.click(
-                    delay=gaussian_random_delay(), timeout=15000
-                )
-                google_button_clicked = True
-                log.info("Clicked Google sign-in button with selector: %s", selector)
-                break
-            except Exception:
-                continue
+        # Watch for a popup opened by the click. ``expect_page`` races the
+        # click against a new-page event in the same browser context.
+        popup_page: Optional[Page] = None
+        try:
+            with page.context.expect_page(timeout=10000) as popup_info:
+                clicked = False
+                for selector in google_button_selectors:
+                    try:
+                        page.locator(selector).first.click(
+                            delay=gaussian_random_delay(), timeout=15000
+                        )
+                        log.info(
+                            "Clicked Google sign-in button with selector: %s",
+                            selector,
+                        )
+                        clicked = True
+                        break
+                    except PlaywrightError:
+                        continue
+                if not clicked:
+                    raise PlaywrightError("Could not find Google sign-in button")
+            popup_page = popup_info.value
+        except PlaywrightError:
+            # No popup opened — either the click failed, or the site uses a
+            # same-tab redirect instead of a popup.
+            popup_page = None
 
-        if not google_button_clicked:
-            log.error("Could not find Google sign-in button")
+        if popup_page is not None:
+            log.info("OAuth popup detected; driving consent in new window")
+            _drive_google_popup(popup_page)
+            # Main page should now be navigating back to the site. Wait
+            # for it to leave any intermediate /AuthCallback URL.
+            try:
+                page.wait_for_load_state("networkidle", timeout=30000)
+                log.info("Google OAuth login completed successfully (popup)")
+            except PlaywrightError as e:
+                log.warning("Timeout waiting for post-OAuth load: %s", e)
             return
 
+        # ---- Same-tab redirect fallback (legacy flow) ----
         try:
-            page.wait_for_url("**/accounts.google.com/**", timeout=10000)
-        except Exception:
-            log.info("Already logged in or no redirect to Google login page")
+            page.wait_for_url("**/accounts.google.com/**", timeout=5000)
+        except PlaywrightError:
+            log.info(
+                "No OAuth popup and no redirect to Google — session may "
+                "already be established"
+            )
             return
 
         email = os.getenv("GOOGLE_EMAIL")
@@ -732,7 +864,7 @@ def google_oauth_login_page_make() -> Tuple[
 
         try:
             page.wait_for_load_state("networkidle", timeout=30000)
-            log.info("Google OAuth login completed successfully")
+            log.info("Google OAuth login completed successfully (same-tab)")
         except Exception as e:
             log.warning("Timeout waiting for redirect, continuing: %s", e)
 
