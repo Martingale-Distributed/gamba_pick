@@ -1,6 +1,7 @@
 from argparse import ArgumentParser
 from dataclasses import dataclass, field
-from typing import Callable, Optional, List, Tuple, Dict, Literal
+from pathlib import Path
+from typing import Callable, Optional, List, Tuple, Dict, Literal, Union
 from playwright.sync_api import (
     Page,
     Locator,
@@ -741,6 +742,71 @@ def url_to_env_prefix(url: str) -> str:
     return prefix.upper()
 
 
+_env_loaded = False
+
+
+def load_env_file(
+    path: Optional[Union[str, Path]] = None, override: bool = False
+) -> Optional[Path]:
+    """Load ``KEY=VALUE`` pairs from a ``.env``-style file into ``os.environ``.
+
+    When ``path`` is ``None``, looks for ``.env`` in the current working
+    directory, then falls back to the legacy ``picks.env`` name with a
+    deprecation warning. Returns the ``Path`` that was loaded, or ``None`` if
+    no file was found.
+
+    Supported syntax: blank lines, ``#`` comments, optional ``export `` prefix,
+    and optional single- or double-quoted values. Variable expansion is not
+    supported. Existing environment variables are preserved unless
+    ``override=True``.
+    """
+    global _env_loaded
+
+    if path is None:
+        for candidate in (".env", "picks.env"):
+            p = Path(candidate)
+            if p.exists():
+                if candidate == "picks.env":
+                    log.warning(
+                        "Loading credentials from picks.env — rename to .env; "
+                        "the picks.env fallback is deprecated."
+                    )
+                path = p
+                break
+        else:
+            _env_loaded = True
+            return None
+    else:
+        path = Path(path)
+        if not path.exists():
+            raise FileNotFoundError(path)
+
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            if line.startswith("export "):
+                line = line[len("export "):]
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+                value = value[1:-1]
+            if key and (override or key not in os.environ):
+                os.environ[key] = value
+
+    _env_loaded = True
+    log.info("Loaded environment from %s", path)
+    return path
+
+
+def _ensure_env_loaded() -> None:
+    """Load ``.env`` once, lazily, on first credential lookup."""
+    if not _env_loaded:
+        load_env_file()
+
+
 def get_credentials(url: str, twofa: bool = False) -> Tuple[str, str, str]:
     """Get the credentials for Tronpick.
 
@@ -750,6 +816,7 @@ def get_credentials(url: str, twofa: bool = False) -> Tuple[str, str, str]:
     Returns:
         tuple[str, str]: The username and password.
     """
+    _ensure_env_loaded()
 
     env_prefix = url_to_env_prefix(url)
 

@@ -33,6 +33,7 @@ from casino import (
 )
 from casino import (
     get_credentials,
+    load_env_file,
     wait_for_load_all_safe,
     wait_for_clickable,
     safe_click,
@@ -1904,22 +1905,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # Load environment variables from .env or picks.env if present
-    for env_file in ["picks.env", ".env"]:
-        env_path = Path(env_file)
-        if env_path.exists():
-            with open(env_path) as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith("#") or "=" not in line:
-                        continue
-                    key, _, value = line.partition("=")
-                    key = key.strip()
-                    value = value.strip()
-                    if key and key not in os.environ:
-                        os.environ[key] = value
-            log.info("Loaded environment from %s", env_file)
-            break
+    load_env_file()
 
     all_picks = load_picks()
     if not all_picks:
