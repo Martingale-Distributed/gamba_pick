@@ -17,7 +17,7 @@ from casino import (
 from pathlib import Path
 from typing import Callable, Optional, Dict
 from playwright.sync_api import Page
-from scrapling.fetchers import StealthySession
+from scrapling.fetchers import DynamicSession, StealthySession
 from scrapling.engines.toolbelt.custom import Response
 from scrapling.cli import log
 
@@ -161,10 +161,12 @@ def make_casino_automation(
             )
             headless = False
 
-        # Configure additional browser arguments
-        additional_args = {}
-        if user_data_dir is not None:
-            additional_args["user_data_dir"] = user_data_dir
+        # Both StealthySession and DynamicSession expose user_data_dir as a
+        # top-level constructor arg; pass "" when not set to mean "ephemeral".
+        session_user_data_dir = user_data_dir or ""
+        # Currently unused but reserved for future launch-time overrides
+        # (flags that need to reach Playwright/Camoufox directly).
+        additional_args: Dict = {}
 
         # Build the login action: either form credentials or Google OAuth.
         # OAuth still honors the site's pre_login_callback (e.g. clicking
@@ -291,15 +293,33 @@ def make_casino_automation(
             log.info(f"[{config.name}] Casino action completed successfully")
 
         # Execute the casino action in a stealthy browser session
-        with StealthySession(
-            proxy=proxy,
-            headless=headless,
-            humanize=True,
-            load_dom=True,
-            google_search=False,
-            geoip=config.geoip,
-            additional_args=additional_args,
-        ) as session:
+        if config.browser_backend == "chrome":
+            # Patchright-based stealth Chromium (or real Chrome via
+            # ``real_chrome=True``). No geoip / solve_cloudflare knobs on
+            # this backend, so those CasinoConfig fields are ignored.
+            session_cm = DynamicSession(
+                proxy=proxy,
+                headless=headless,
+                load_dom=True,
+                google_search=False,
+                stealth=True,
+                real_chrome=config.real_chrome,
+                user_data_dir=session_user_data_dir,
+                additional_args=additional_args,
+            )
+        else:
+            session_cm = StealthySession(
+                proxy=proxy,
+                headless=headless,
+                humanize=True,
+                load_dom=True,
+                google_search=False,
+                geoip=config.geoip,
+                solve_cloudflare=config.solve_cloudflare,
+                user_data_dir=session_user_data_dir,
+                additional_args=additional_args,
+            )
+        with session_cm as session:
             log.info(f"[{config.name}] Fetching {config.login_url}...")
             _: Response = session.fetch(
                 config.login_url,

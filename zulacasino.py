@@ -165,6 +165,19 @@ def create_zulacasino_config() -> CasinoConfig:
         requires_2fa=False,
         # No compliance-vendor geo gate on Zula; default browser geo is fine.
         geoip=False,
+        # Scrapling's solve_cloudflare runs against the initial fetch URL
+        # (the homepage), which has no challenge — Zula's Turnstile is on
+        # the subsequent /login page that pre_login navigates to. The hook
+        # doesn't fire there, so it ends up noisy (logs a spurious ERROR
+        # and adds latency) without solving the real thing. Keep False and
+        # rely on our own `wait_for_turnstile` at the right point in the
+        # sequence.
+        solve_cloudflare=False,
+        # Camoufox backend. The Chrome backend was tried as a Turnstile-
+        # auto-pass workaround (see scrapling_ext.py for DynamicSession
+        # plumbing) but also failed in practice — keeping the plumbing
+        # around for future sites that might benefit.
+        browser_backend="camoufox",
         page_wait_timeout=5000,
         fetch_timeout=60000,
     )

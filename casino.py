@@ -782,14 +782,25 @@ def google_oauth_login_page_make() -> Tuple[
 
         # Watch for a popup opened by the click. ``expect_page`` races the
         # click against a new-page event in the same browser context.
+        #
+        # ``no_wait_after=True`` is critical here: the SSO button often
+        # kicks off a server-side handshake alongside the window.open, and
+        # Playwright's default post-click nav-wait creates a driver-side
+        # promise that orphans if the handshake takes longer than the
+        # click timeout. The orphan crashes Node via its unhandled-
+        # rejection handler before Python can catch the exception. Opting
+        # out of the nav wait keeps the promise off the event loop; the
+        # popup event we care about is observed by ``expect_page`` anyway.
         popup_page: Optional[Page] = None
         try:
-            with page.context.expect_page(timeout=10000) as popup_info:
+            with page.context.expect_page(timeout=15000) as popup_info:
                 clicked = False
                 for selector in google_button_selectors:
                     try:
                         page.locator(selector).first.click(
-                            delay=gaussian_random_delay(), timeout=15000
+                            delay=gaussian_random_delay(),
+                            timeout=10000,
+                            no_wait_after=True,
                         )
                         log.info(
                             "Clicked Google sign-in button with selector: %s",
@@ -1423,3 +1434,33 @@ class CasinoConfig:
     # jurisdiction on their own IP. Leave False for adversarial
     # geo-spoofing (in which case use make_set_geolocation explicitly).
     geoip: bool = False
+
+    # Enable Camoufox's built-in Cloudflare challenge auto-solver. Handles
+    # Turnstile (including the inline widget variant) and IUAM "checking
+    # your browser" interstitials. Use on sites where the invisible
+    # Turnstile path doesn't consistently auto-pass in Camoufox — notably
+    # Zula, where clicking the SSO button before the widget is green
+    # triggers a hard reject. No effect on sites without Cloudflare
+    # challenges, so it's also safe-to-enable broadly.
+    solve_cloudflare: bool = False
+
+    # Browser backend:
+    #   "camoufox" (default) — StealthySession on a stealthed Firefox fork.
+    #     Best for geoip-gated sites (GeoComply etc.) and has the most
+    #     stealth options. Downside: Firefox-derived fingerprint is rarer
+    #     than Chrome's, so Turnstile sometimes pushes to visible challenges.
+    #   "chrome" — DynamicSession on Patchright's stealth Chromium (or real
+    #     Chrome via ``real_chrome=True``). Chrome's fingerprint is the
+    #     commonest on the web so Turnstile risk-scoring almost always runs
+    #     the invisible-pass path. Does NOT support geoip or solve_cloudflare.
+    #
+    # Switching backends invalidates the persisted ``user_data_dir`` (Firefox
+    # profile layout ≠ Chrome profile layout); rerun with ``--setup`` after
+    # flipping this.
+    browser_backend: Literal["camoufox", "chrome"] = "camoufox"
+
+    # Only meaningful when ``browser_backend="chrome"``. When True, Scrapling
+    # launches the system's installed Chrome binary (most realistic
+    # fingerprint). When False, uses Patchright's bundled Chromium, which is
+    # close enough for most Turnstile challenges and requires no extra setup.
+    real_chrome: bool = False
