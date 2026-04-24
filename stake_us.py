@@ -83,7 +83,11 @@ def main(
     google_oauth: Optional[bool] = False,
     skip_claim: Optional[bool] = False,
     user_data_dir: Optional[str] = None,
+    setup: bool = False,
 ):
+    # setup is accepted for argparse compatibility; stake_us uses form
+    # credentials and doesn't need the interactive OAuth bootstrap.
+    _ = setup
     headless = headless if headless is not None else False
     username, password, totp_secret = get_credentials("https://stake.us")
     action_args = {

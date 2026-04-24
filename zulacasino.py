@@ -17,33 +17,29 @@ Auth path: Google OAuth
 -----------------------
 This script is set up to use **Google OAuth** (``--google-oauth``).
 Form-based email+password login also works, but Zula gates it behind
-Turnstile and the OAuth path is simpler and avoids the captcha. Pair
-``--google-oauth`` with ``--user-data-dir`` pointed at a Camoufox/Firefox
-profile that already has an authenticated Google session so no
-credentials need to be typed each run.
+Cloudflare Turnstile — the OAuth path avoids the captcha entirely.
 
-First-time setup for OAuth:
-  1. Create a persistent profile dir, e.g. ``~/.gamba_pick/zula_profile``.
-  2. Run once with ``--google-oauth --user-data-dir <path>`` — when the
-     Google sign-in flow appears, complete it manually in the browser.
-  3. Subsequent runs with the same ``--user-data-dir`` reuse the session.
+First-time setup:
 
-Alternatively, set ``GOOGLE_EMAIL`` / ``GOOGLE_PASSWORD`` in ``.env`` and
-the OAuth page action will fill them when the redirect happens. 2FA on
-the Google account will block this; persistent ``user_data_dir`` is
-preferred.
+  python zulacasino.py --google-oauth --setup
 
-Credentials for form login (non-OAuth path) come from ``.env`` via
+``--setup`` launches a non-headless browser, runs ``pre_login`` to land
+on Zula's ``/login`` page, and then pauses so you can click "Sign in
+with Google", complete 2FA, grant site consent, etc. Press Enter in the
+terminal once you're fully signed in — the browser session persists to
+``./profiles/zulacasino/`` (the default when ``--user-data-dir`` isn't
+specified) and the script exits without claiming.
+
+Normal runs after setup:
+
+  python zulacasino.py --google-oauth [--headless]
+
+The Google consent screen is skipped because the cookies are already in
+the profile dir. Override with ``--user-data-dir <path>`` if you want a
+different profile location.
+
+Credentials for the form-login path (non-OAuth) come from ``.env`` via
 ``ZULACASINO_USERNAME`` / ``ZULACASINO_PASSWORD``.
-
-TODOs (post-login scouting needed):
-  - Daily claim button selector (likely a CTA on the homepage after auth,
-    similar to SpinQuest's HomeCtaCardButton).
-  - Currency-switcher selector + pattern (dropdown vs. click-to-cycle).
-
-Usage
------
-python zulacasino.py --google-oauth --user-data-dir <profile> [--headless] [--skip-claim]
 """
 
 from playwright.sync_api import Page
@@ -53,7 +49,7 @@ from casino import (
     Currency,
     CurrencyDisplayConfig,
     LoginConfig,
-    SimpleClaimConfig,
+    MTBClaimConfig,
     gaussian_random_delay,
     get_arg_parser,
     log,
@@ -64,18 +60,32 @@ from scrapling_ext import make_casino_automation
 def click_header_login(page: Page) -> None:
     """Click the header LogIn button to start the OAuth login flow.
 
-    Zula's login is a full-page redirect (not a modal), so this kicks off
-    the navigation to ``/login?ReturnUrl=...&code_challenge=...`` before
-    the framework fills credentials. The ``unauthorized-header-login-btn``
-    class is the stable hook; the element also has ``id=TEST_LOADING_BUTTON``
-    which is less semantically appropriate despite being stable.
+    Zula's login is a full-page redirect (not a modal), so clicking the
+    button kicks off navigation to ``/login?ReturnUrl=...&code_challenge=...``
+    which includes the OAuth PKCE nonce generated client-side — we can't
+    just navigate directly to ``/login`` without losing that.
+
+    Uses ``no_wait_after=True`` so Playwright doesn't hold a pending
+    after-click promise waiting for navigation (that promise, if it
+    times out, crashes the Node driver while Python is blocked on
+    ``input()`` in ``--setup`` mode). We wait for the ``/login`` URL
+    explicitly instead.
     """
     try:
         btn = page.locator("button.unauthorized-header-login-btn").first
         if btn.count() > 0 and btn.is_visible():
-            btn.click(delay=gaussian_random_delay(), timeout=5000)
-            page.wait_for_timeout(1000)
-            log.info("Clicked Zula header login button")
+            btn.click(
+                delay=gaussian_random_delay(),
+                timeout=10000,
+                no_wait_after=True,
+            )
+            try:
+                page.wait_for_url("**/login*", timeout=15000)
+                log.info("Reached Zula /login page")
+            except Exception:
+                log.info(
+                    "Timeout waiting for /login URL; current url: %s", page.url
+                )
         else:
             log.info("Header login button not visible; may already be on /login")
     except Exception as e:
@@ -104,33 +114,53 @@ def create_zulacasino_config() -> CasinoConfig:
             pre_login_callback=click_header_login,
         ),
 
-        # TODO: verify post-login. Common Zula pattern is a coin-switcher
-        # in the header; selectors below are PLACEHOLDERS until we can scout
-        # the authenticated UI. For first run use --skip-claim and grab the
-        # HTML of the switcher + claim button.
+        # Zula shows both balances simultaneously in the header — no
+        # dropdown or switcher needed. Each `FCButtonItem` div has a
+        # currency-specific class (`.GCoins` / `.FCoins`) and its text is
+        # the code prefix followed by the formatted amount, e.g.
+        # `GC5,163,117` or `SC0.06`. The shared balance parser strips
+        # the currency.code prefix and commas before float-parsing.
+        # NOTE: Sweeps Coins is called "Free Coins" (FCoins) internally.
         currency_display=CurrencyDisplayConfig(
             currencies=[
                 Currency(
                     name="Sweeps Coins",
                     code="SC",
-                    selectors=['[data-sentry-component*="CurrencyBalance"]'],
+                    selectors=['div.FCButtonItem.FCoins'],
                 ),
                 Currency(
                     name="Gold Coins",
                     code="GC",
-                    selectors=['[data-sentry-component*="CurrencyBalance"]'],
+                    selectors=['div.FCButtonItem.GCoins'],
                 ),
             ],
             currency_toggle_dropdown_selector=None,
             currency_toggle_switch_selector=None,
         ),
 
-        # TODO: placeholder. Replace with the real daily-claim CTA once
-        # scouted from a logged-in session.
-        claim_config=SimpleClaimConfig(
-            btn_selector='button:has-text("claim")',
+        # Daily claim lives in the Coin Store, opened by drilling down
+        # through the header. This is always-nav, which handles the case
+        # where the first-login-of-day auto-popup didn't fire (already
+        # dismissed, not the first session, etc.) — see MTBClaimConfig
+        # semantics: modal → tab → button (→ close).
+        #
+        # Click chain:
+        #   1. modal_selector: any coin-balance button in header → opens
+        #      a `.balance__container` popover with Redeem SC / Get Coins
+        #      action buttons.
+        #   2. tab_selector: "Get Coins" in that popover → opens the
+        #      Coin Store overlay containing the daily bonus package.
+        #   3. btn_selector: COLLECT on the reward package → claims it.
+        #      MTB flow is is_disabled-aware, so if the bonus is already
+        #      claimed (button disabled), the flow logs and skips cleanly.
+        #   4. close_btn_selector: `.dialog-close-button` closes the store.
+        claim_config=MTBClaimConfig(
+            modal_selector='button.FCButtonText',
+            tab_selector='button.balance__button:has-text("Get Coins")',
+            btn_selector='button.coin-store-reward-package-footer-button',
+            close_btn_selector='button.dialog-close-button',
         ),
-        claim_pattern="simple",
+        claim_pattern="mtb",
 
         requires_2fa=False,
         # No compliance-vendor geo gate on Zula; default browser geo is fine.

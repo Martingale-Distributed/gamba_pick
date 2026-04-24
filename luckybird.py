@@ -211,7 +211,11 @@ def main(
     skip_claim: bool = False,
     proxy: Optional[str] = None,
     user_data_dir: Optional[str] = None,
+    setup: bool = False,
 ):
+    # setup is accepted for argparse compatibility; luckybird uses form
+    # credentials and doesn't need the interactive OAuth bootstrap.
+    _ = setup
     # Get LuckyBird credentials
     username, password, totp_secret = get_credentials(
         "https://luckybird.io", twofa=True

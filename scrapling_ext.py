@@ -12,12 +12,32 @@ from casino import (
     make_simple_claim_button,
     make_login_action_factory,
     wait_for_load_all_safe,
+    wait_for_turnstile,
 )
+from pathlib import Path
 from typing import Callable, Optional, Dict
 from playwright.sync_api import Page
 from scrapling.fetchers import StealthySession
 from scrapling.engines.toolbelt.custom import Response
 from scrapling.cli import log
+
+
+# Setup mode gives the human time to click through consent screens,
+# possibly handle 2FA, etc. The normal 60s fetch timeout isn't enough.
+SETUP_FETCH_TIMEOUT_MS = 600_000  # 10 minutes
+
+
+def _default_oauth_profile_dir(name: str) -> str:
+    """Derive a per-site profile dir under ``./profiles/<name>``.
+
+    Keeps OAuth sessions isolated per site (so a shared Google profile
+    can't be used to correlate activity across multiple sweepstakes
+    casinos, which is exactly what compliance systems look for).
+    """
+    slug = "".join(c if c.isalnum() else "_" for c in name).strip("_").lower()
+    path = Path("profiles") / slug
+    path.mkdir(parents=True, exist_ok=True)
+    return str(path.resolve())
 
 def make_casino_automation(
     config: CasinoConfig,
@@ -106,6 +126,7 @@ def make_casino_automation(
         skip_claim: bool = False,
         proxy: Optional[str] = None,
         user_data_dir: Optional[str] = None,
+        setup: bool = False,
     ):
         """Main function for casino automation.
 
@@ -116,8 +137,30 @@ def make_casino_automation(
                 already-authenticated Google session.
             skip_claim: Skip claiming the daily bonus
             proxy: Proxy server to use
-            user_data_dir: Path to user data directory for browser session
+            user_data_dir: Path to user data directory for browser session.
+                When ``google_oauth`` is set and this is None, defaults to
+                ``./profiles/<sitename>`` so sessions persist between runs.
+            setup: Interactive setup mode. Launches non-headless, runs
+                ``pre_login_callback`` to reach the login page, then pauses
+                waiting for the user to complete Google OAuth (or any
+                first-time auth step) by hand. Session is saved into
+                ``user_data_dir`` and the script exits without claiming.
         """
+        # Default a per-site OAuth profile so re-runs keep the Google session.
+        if (google_oauth or setup) and user_data_dir is None:
+            user_data_dir = _default_oauth_profile_dir(config.name)
+            log.info(
+                f"[{config.name}] No --user-data-dir provided; using default %s",
+                user_data_dir,
+            )
+
+        # Setup implies interactive: headless makes no sense here.
+        if setup and headless:
+            log.warning(
+                f"[{config.name}] --setup implies non-headless; ignoring --headless"
+            )
+            headless = False
+
         # Configure additional browser arguments
         additional_args = {}
         if user_data_dir is not None:
@@ -127,10 +170,50 @@ def make_casino_automation(
         # OAuth still honors the site's pre_login_callback (e.g. clicking
         # the header login button to reach the /login page) before handing
         # off to the Google button-click + redirect flow.
-        if google_oauth:
+        pre_login = config.login.pre_login_callback
+        post_login = config.login.post_login_callback
+
+        if setup:
+            # Setup mode runs pre_login to get us to the login page, then
+            # pauses so the user can click "Sign in with Google", complete
+            # any 2FA, grant site consent, etc. We don't call oauth_login
+            # here — the human is driving. Browser persistence writes cookies
+            # to user_data_dir as they arrive, so the session will be
+            # available on subsequent headless runs.
+            def login_action(page: Page) -> None:
+                if pre_login is not None:
+                    pre_login(page)
+                # Detect and wait out any Turnstile challenge on the
+                # login page so the terminal reflects its state. Long
+                # timeout (5 min) since a visible challenge may need
+                # human interaction — clicking Google before Turnstile
+                # is green triggers a hard reject on most sites.
+                wait_for_turnstile(page, timeout=300_000)
+                log.info("=" * 70)
+                log.info(
+                    f"[{config.name}] Browser is at the login page. "
+                    "Complete sign-in manually (Google OAuth, 2FA, site "
+                    "consent, whatever's needed)."
+                )
+                log.info(
+                    f"[{config.name}] When you're fully authenticated on "
+                    "the site, come back here and press Enter to save the "
+                    "session and exit."
+                )
+                log.info("=" * 70)
+                try:
+                    input("Press Enter when finished... ")
+                except (EOFError, KeyboardInterrupt):
+                    log.warning(f"[{config.name}] Setup cancelled by user")
+                    return
+                # Brief settle window for any in-flight cookie writes.
+                page.wait_for_timeout(1500)
+                log.info(
+                    f"[{config.name}] Setup complete — session written to %s",
+                    user_data_dir,
+                )
+        elif google_oauth:
             oauth_login, _ = google_oauth_login_page_make()
-            pre_login = config.login.pre_login_callback
-            post_login = config.login.post_login_callback
 
             def login_action(page: Page) -> None:
                 if pre_login is not None:
@@ -149,6 +232,11 @@ def make_casino_automation(
             # Step 1: Login
             log.info(f"[{config.name}] Starting login process...")
             login_action(page)
+            if setup:
+                # In setup mode the login action blocks on user input; once
+                # it returns we just exit so the session writes and the
+                # browser closes cleanly. Skip balance/claim entirely.
+                return
             wait_for_load_all_safe(page)
             log.info(f"[{config.name}] Login completed successfully")
 
@@ -217,7 +305,7 @@ def make_casino_automation(
                 config.login_url,
                 page_action=casino_action,
                 wait=config.page_wait_timeout,
-                timeout=config.fetch_timeout,
+                timeout=SETUP_FETCH_TIMEOUT_MS if setup else config.fetch_timeout,
             )
             log.info(f"[{config.name}] Session completed")
 

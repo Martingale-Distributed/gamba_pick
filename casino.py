@@ -560,6 +560,83 @@ def highlight_element(page: Page, selector: str):
         log.error("Error highlighting element: %s", str(e))
 
 
+# Detection selectors for Cloudflare Turnstile. The widget injects its
+# response input asynchronously after the CF script evaluates, so we probe
+# multiple signals — the hidden response input, the challenge iframe, the
+# standard `cf-turnstile` container, any element with a `data-sitekey`
+# attribute, and the Zula-style wrapper class that hosts the widget.
+_TURNSTILE_DETECT_JS = """() => {
+  return !!(
+    document.querySelector('input[name="cf-turnstile-response"]') ||
+    document.querySelector('iframe[src*="challenges.cloudflare.com"]') ||
+    document.querySelector('div.cf-turnstile') ||
+    document.querySelector('[data-sitekey]') ||
+    document.querySelector('div.login-turnstile') ||
+    document.querySelector('.login-form-content-turnstile')
+  );
+}"""
+
+# Solve signal: a populated response input anywhere in the main frame.
+# Real tokens are ~500-800 chars; >10 filters out empty / placeholder values.
+_TURNSTILE_SOLVED_JS = """() => {
+  const el = document.querySelector('input[name="cf-turnstile-response"]');
+  return !!(el && el.value && el.value.length > 10);
+}"""
+
+
+def wait_for_turnstile(page: Page, timeout: int = 30000) -> bool:
+    """Wait for a Cloudflare Turnstile challenge to resolve.
+
+    Detects Turnstile by probing several DOM signals in a single evaluate
+    (response input, challenge iframe, widget container, site-specific
+    wrappers). If none appear within a short grace window the page is
+    assumed not to use Turnstile and the function returns immediately.
+
+    Once detected, waits for the ``cf-turnstile-response`` hidden input to
+    have a populated token — the standard widget surface even when the
+    visible UI is an iframe. With Camoufox stealth the invisible mode
+    typically auto-solves within a few seconds; a visible challenge
+    requires manual interaction (only relevant in ``--setup`` mode where
+    a human is driving).
+
+    Args:
+        page: Playwright page.
+        timeout: Max ms to wait for the token to be populated.
+
+    Returns:
+        True if Turnstile resolved (or wasn't present). False if it was
+        present but didn't resolve in time.
+    """
+    # First pass: quick probe for any Turnstile signal.
+    detected = page.evaluate(_TURNSTILE_DETECT_JS)
+    if not detected:
+        # Widgets are often injected asynchronously after DOMContentLoaded.
+        # Give Cloudflare's script a chance to mount before giving up.
+        try:
+            page.wait_for_function(_TURNSTILE_DETECT_JS, timeout=5000)
+            detected = True
+        except PlaywrightError:
+            detected = False
+
+    if not detected:
+        log.debug("No Turnstile detected on page")
+        return True
+
+    # Fast path: widget is already solved by the time we look.
+    if page.evaluate(_TURNSTILE_SOLVED_JS):
+        log.debug("Turnstile already solved")
+        return True
+
+    log.info("Waiting for Cloudflare Turnstile to resolve...")
+    try:
+        page.wait_for_function(_TURNSTILE_SOLVED_JS, timeout=timeout)
+        log.info("Turnstile resolved")
+        return True
+    except PlaywrightError as e:
+        log.warning("Turnstile did not resolve in %dms: %s", timeout, str(e))
+        return False
+
+
 def google_oauth_login_page_make() -> Tuple[
     Callable[[Page], None], Callable[[], bool]
 ]:
@@ -581,6 +658,12 @@ def google_oauth_login_page_make() -> Tuple[
         """Perform Google OAuth login on the given page."""
         page.wait_for_load_state("domcontentloaded", timeout=5000)
 
+        # Some login pages (e.g. Zula) gate the Google button behind
+        # Cloudflare Turnstile — it stays disabled until the challenge
+        # resolves. Wait for the Turnstile token to be populated before
+        # attempting to click.
+        wait_for_turnstile(page, timeout=30000)
+
         google_button_selectors = [
             "button:has-text('Google')",
             "a:has-text('Google')",
@@ -592,8 +675,11 @@ def google_oauth_login_page_make() -> Tuple[
         google_button_clicked = False
         for selector in google_button_selectors:
             try:
+                # Generous timeout: after Turnstile resolves, the button
+                # may still take a moment to become enabled, and the click
+                # itself triggers navigation which Playwright waits on.
                 page.locator(selector).first.click(
-                    delay=gaussian_random_delay(), timeout=2000
+                    delay=gaussian_random_delay(), timeout=15000
                 )
                 google_button_clicked = True
                 log.info("Clicked Google sign-in button with selector: %s", selector)
@@ -1079,6 +1165,16 @@ def get_arg_parser(description: str = "Generic Daily Bonus Claimer") -> Argument
         "--google-oauth",
         action="store_true",
         help="Enable Google OAuth handling (if applicable)",
+    )
+    parser.add_argument(
+        "--setup",
+        action="store_true",
+        help=(
+            "Interactive setup mode: launch non-headless browser, run "
+            "pre-login to reach the login page, then pause so you can "
+            "complete OAuth (or any other first-time auth) by hand. "
+            "Persists the session into --user-data-dir and exits."
+        ),
     )
     parser.add_argument(
         "--skip-claim",

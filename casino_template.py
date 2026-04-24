@@ -247,7 +247,12 @@ def main(
     skip_claim: bool = False,
     proxy: Optional[str] = None,
     user_data_dir: Optional[str] = None,
+    setup: bool = False,
 ):
+    # setup is accepted for argparse compatibility. Template scripts built
+    # on make_casino_automation get real setup-mode support for free; this
+    # standalone template just ignores the flag.
+    _ = setup
     """
     Main function that orchestrates the casino automation.
 
