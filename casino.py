@@ -560,6 +560,102 @@ def highlight_element(page: Page, selector: str):
         log.error("Error highlighting element: %s", str(e))
 
 
+def google_oauth_login_page_make() -> Tuple[
+    Callable[[Page], None], Callable[[], bool]
+]:
+    """Create a Google OAuth login page action.
+
+    The returned action clicks a "Sign in with Google" button on the current
+    page, waits for the redirect to ``accounts.google.com``, and fills in
+    ``GOOGLE_EMAIL`` / ``GOOGLE_PASSWORD`` from the environment. If no
+    redirect happens (the Google session is already established via
+    ``user_data_dir``), the action returns early and the OAuth flow
+    completes silently.
+
+    Returns:
+        tuple[Callable[[Page], None], Callable[[], bool]]: A tuple of
+            (page action, always-False ``was_claim_attempted``).
+    """
+
+    def google_login_page(page: Page):
+        """Perform Google OAuth login on the given page."""
+        page.wait_for_load_state("domcontentloaded", timeout=5000)
+
+        google_button_selectors = [
+            "button:has-text('Google')",
+            "a:has-text('Google')",
+            "button:has-text('Sign in with Google')",
+            "[class*='google'][class*='login']",
+            "[id*='google'][id*='login']",
+        ]
+
+        google_button_clicked = False
+        for selector in google_button_selectors:
+            try:
+                page.locator(selector).first.click(
+                    delay=gaussian_random_delay(), timeout=2000
+                )
+                google_button_clicked = True
+                log.info("Clicked Google sign-in button with selector: %s", selector)
+                break
+            except Exception:
+                continue
+
+        if not google_button_clicked:
+            log.error("Could not find Google sign-in button")
+            return
+
+        try:
+            page.wait_for_url("**/accounts.google.com/**", timeout=10000)
+        except Exception:
+            log.info("Already logged in or no redirect to Google login page")
+            return
+
+        email = os.getenv("GOOGLE_EMAIL")
+        if not email:
+            log.error("GOOGLE_EMAIL environment variable not set")
+            return
+
+        try:
+            page.fill('input[type="email"]', email, timeout=5000)
+            page.click(
+                'button:has-text("Next")', delay=gaussian_random_delay(), timeout=3000
+            )
+            log.info("Entered Google email")
+        except Exception as e:
+            log.error("Failed to enter email: %s", e)
+            return
+
+        password = os.getenv("GOOGLE_PASSWORD")
+        if not password:
+            log.error("GOOGLE_PASSWORD environment variable not set")
+            return
+
+        try:
+            page.wait_for_selector(
+                'input[type="password"]', state="visible", timeout=10000
+            )
+            page.fill('input[type="password"]', password, timeout=5000)
+            page.click(
+                'button:has-text("Next")', delay=gaussian_random_delay(), timeout=3000
+            )
+            log.info("Entered Google password")
+        except Exception as e:
+            log.error("Failed to enter password: %s", e)
+            return
+
+        try:
+            page.wait_for_load_state("networkidle", timeout=30000)
+            log.info("Google OAuth login completed successfully")
+        except Exception as e:
+            log.warning("Timeout waiting for redirect, continuing: %s", e)
+
+    def was_claim_attempted() -> bool:
+        return False
+
+    return google_login_page, was_claim_attempted
+
+
 def make_generic_accept_or_close_modals(
     main_enabled_selector: str, modal_selector: str, close_modal_selector: str
 ) -> Callable[[Page], bool]:

@@ -33,6 +33,7 @@ from casino import (
 )
 from casino import (
     get_credentials,
+    google_oauth_login_page_make,
     load_env_file,
     wait_for_load_all_safe,
     wait_for_clickable,
@@ -882,112 +883,6 @@ def parse_account_state_res(res: Response, currency: str = "UNK") -> AccountStat
         free_spins=free_spins,
         time_remaining=time_remaining,
     )
-
-
-def google_oauth_login_page_make() -> tuple[Callable[[Page], None], Callable[[], bool]]:
-    """Create a Google OAuth login page action.
-
-    Returns:
-        tuple[Callable[[Page], None], Callable[[], bool]]: A tuple containing:
-            - The Google OAuth login page action function
-            - A function that always returns False (Google OAuth doesn't auto-claim)
-    """
-
-    def google_login_page(page: Page):
-        """
-        Perform Google OAuth login on the given page.
-        Args:
-            page (Page): The Playwright page object.
-        Returns:
-            None
-        """
-        # Wait for page to load
-        page.wait_for_load_state("domcontentloaded", timeout=5000)
-
-        # Look for and click Google sign-in button
-        google_button_selectors = [
-            "button:has-text('Google')",
-            "a:has-text('Google')",
-            "button:has-text('Sign in with Google')",
-            "[class*='google'][class*='login']",
-            "[id*='google'][id*='login']",
-        ]
-
-        google_button_clicked = False
-        for selector in google_button_selectors:
-            try:
-                page.get_by_text
-                page.locator(selector).first.click(
-                    delay=gaussian_random_delay(), timeout=2000
-                )
-                google_button_clicked = True
-                log.info("Clicked Google sign-in button with selector: %s", selector)
-                break
-            except Exception:
-                continue
-
-        if not google_button_clicked:
-            log.error("Could not find Google sign-in button")
-            return
-
-        # Wait for Google login page or redirect
-        try:
-            page.wait_for_url("**/accounts.google.com/**", timeout=10000)
-        except Exception:
-            log.info("Already logged in or no redirect to Google login page")
-            return
-
-        # Fill in Google email
-        email = os.getenv("GOOGLE_EMAIL")
-        if not email:
-            log.error("GOOGLE_EMAIL environment variable not set")
-            return
-
-        try:
-            page.fill('input[type="email"]', email, timeout=5000)
-            page.click(
-                'button:has-text("Next")', delay=gaussian_random_delay(), timeout=3000
-            )
-            log.info("Entered Google email")
-        except Exception as e:
-            log.error("Failed to enter email: %s", e)
-            return
-
-        # Fill in password
-        password = os.getenv("GOOGLE_PASSWORD")
-        if not password:
-            log.error("GOOGLE_PASSWORD environment variable not set")
-            return
-
-        try:
-            page.wait_for_selector(
-                'input[type="password"]', state="visible", timeout=10000
-            )
-            page.fill('input[type="password"]', password, timeout=5000)
-            page.click(
-                'button:has-text("Next")', delay=gaussian_random_delay(), timeout=3000
-            )
-            log.info("Entered Google password")
-        except Exception as e:
-            log.error("Failed to enter password: %s", e)
-            return
-
-        # Wait for redirect back to the original site
-        try:
-            page.wait_for_load_state("networkidle", timeout=30000)
-            log.info("Google OAuth login completed successfully")
-        except Exception as e:
-            log.warning("Timeout waiting for redirect, continuing: %s", e)
-
-    def was_claim_attempted() -> bool:
-        """Google OAuth login never auto-claims.
-
-        Returns:
-            bool: Always False
-        """
-        return False
-
-    return google_login_page, was_claim_attempted
 
 
 def login_page_make(

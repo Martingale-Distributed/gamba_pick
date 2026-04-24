@@ -5,6 +5,7 @@ from casino import (
     MTBClaimConfig,
     SimpleClaimConfig,
     get_credentials,
+    google_oauth_login_page_make,
     make_modal_tab_button,
     make_get_casino_account_state,
     make_generic_accept_or_close_modals,
@@ -110,23 +111,38 @@ def make_casino_automation(
 
         Args:
             headless: Run browser in headless mode
-            google_oauth: Enable Google OAuth handling (placeholder for future use)
+            google_oauth: Use Google OAuth (Sign in with Google) instead of
+                form credentials. Pair with ``user_data_dir`` to reuse an
+                already-authenticated Google session.
             skip_claim: Skip claiming the daily bonus
             proxy: Proxy server to use
             user_data_dir: Path to user data directory for browser session
         """
-        # Get credentials from environment
-        username, password, totp_secret = get_credentials(
-            config.url, twofa=config.requires_2fa
-        )
-
         # Configure additional browser arguments
         additional_args = {}
         if user_data_dir is not None:
             additional_args["user_data_dir"] = user_data_dir
 
-        # Create login action with credentials
-        login_action = login_action_factory(username, password, totp_secret)
+        # Build the login action: either form credentials or Google OAuth.
+        # OAuth still honors the site's pre_login_callback (e.g. clicking
+        # the header login button to reach the /login page) before handing
+        # off to the Google button-click + redirect flow.
+        if google_oauth:
+            oauth_login, _ = google_oauth_login_page_make()
+            pre_login = config.login.pre_login_callback
+            post_login = config.login.post_login_callback
+
+            def login_action(page: Page) -> None:
+                if pre_login is not None:
+                    pre_login(page)
+                oauth_login(page)
+                if post_login is not None:
+                    post_login(page)
+        else:
+            username, password, totp_secret = get_credentials(
+                config.url, twofa=config.requires_2fa
+            )
+            login_action = login_action_factory(username, password, totp_secret)
 
         def casino_action(page: Page) -> None:
             """Main page action that orchestrates all casino operations."""
