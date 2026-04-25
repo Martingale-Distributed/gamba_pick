@@ -18,6 +18,20 @@ import os
 import logging
 from functools import lru_cache
 
+
+# Scrapling routes ``browser_backend="chrome"`` + ``stealth=True`` through
+# patchright (a stealth-patched Playwright fork) whose error classes do
+# NOT inherit from playwright's. ``except BrowserError`` alone misses
+# them and lets timeouts/navigation errors bubble out of our handlers.
+# This tuple is what we actually want to catch around any Page/Locator
+# call, regardless of which backend scrapling chose at runtime.
+try:
+    from patchright.sync_api import Error as _PatchrightError
+
+    BrowserError: tuple = (PlaywrightError, _PatchrightError)
+except ImportError:  # pragma: no cover — patchright is a scrapling dep
+    BrowserError = (PlaywrightError,)  # type: ignore[assignment]
+
 # Default contant values
 CLICK_TIMEOUT_MS = 5000  # Default timeout for click operations
 MAX_CLICK_RETRIES = 3  # Maximum number of retry attempts for failed clicks
@@ -360,10 +374,10 @@ def wait_for_load_all_safe(
         page.wait_for_load_state("domcontentloaded", timeout=full_load_timeout)
         try:
             page.wait_for_load_state("networkidle", timeout=timeout)
-        except PlaywrightError as _:
+        except BrowserError as _:
             # Sometimes networkidle doesn't happen, ignore.
             pass
-    except PlaywrightError as e:
+    except BrowserError as e:
         log.warning("Page did not fully load within timeout: %s", str(e))
 
 
@@ -411,7 +425,7 @@ def make_modal_tab_button(
             else:
                 claim_btn.click(delay=gaussian_random_delay(), timeout=5000)
                 wait_for_load_all_safe(page, timeout=3000)
-        except PlaywrightError as e:
+        except BrowserError as e:
             log.error("Exception occurred while claiming daily bonus: %s", str(e))
         finally:
             # Close the wallet modal if it's still open
@@ -419,7 +433,7 @@ def make_modal_tab_button(
                 close_btn = page.locator(close_btn_selector)
                 if close_btn.count() > 0:
                     close_btn.click(delay=gaussian_random_delay(), timeout=10000)
-            except PlaywrightError:
+            except BrowserError:
                 pass
 
     return claim_daily_bonus
@@ -533,7 +547,7 @@ def highlight_element_handle(element: ElementHandle):
             }"""
         )
         log.info("Highlighted element with selector: %s", element)
-    except PlaywrightError as e:
+    except BrowserError as e:
         log.error("Error highlighting element: %s", str(e))
 
 
@@ -556,7 +570,7 @@ def highlight_element(page: Page, selector: str):
             log.info("Highlighted element with selector: %s", selector)
         else:
             log.warning("No element found to highlight with selector: %s", selector)
-    except PlaywrightError as e:
+    except BrowserError as e:
         log.error("Error highlighting element: %s", str(e))
 
 
@@ -583,25 +597,157 @@ _TURNSTILE_SOLVED_JS = """() => {
   return !!(el && el.value && el.value.length > 10);
 }"""
 
+# Widget container selectors, in priority order. The active-click path
+# uses the first visible match's bounding box. CF's stock id varies
+# between ``cf_turnstile`` (underscore, scrapling default) and
+# ``cf-turnstile`` (hyphen, more common in the wild). The Stake-family
+# casino sites wrap the widget in their own class — those are listed
+# after the canonical ones so a page that has both prefers the real one.
+_TURNSTILE_WIDGET_SELECTORS = (
+    "div.cf-turnstile",
+    "div#cf_turnstile",
+    "div#cf-turnstile",
+    "div.login-turnstile",
+    ".login-form-content-turnstile",
+    "[class*='turnstile-container']",
+    "iframe[src*='challenges.cloudflare.com']",
+)
 
-def wait_for_turnstile(page: Page, timeout: int = 30000) -> bool:
-    """Wait for a Cloudflare Turnstile challenge to resolve.
+# Where the visible checkbox sits inside the widget's bounding box. The
+# stock "compact" widget is ~300x65px with the checkbox in the upper
+# left at roughly (26, 25). This is the same offset scrapling's solver
+# uses for /login pages and works for both the canonical CF widget and
+# the Stake-family wrappers we've seen so far.
+_TURNSTILE_CHECKBOX_OFFSET = (26, 25)
 
-    Detects Turnstile by probing several DOM signals in a single evaluate
-    (response input, challenge iframe, widget container, site-specific
-    wrappers). If none appear within a short grace window the page is
-    assumed not to use Turnstile and the function returns immediately.
+# Substring markers in page HTML that distinguish between the three
+# Cloudflare-managed challenge flavors. Only set on pages where CF
+# fronts the whole site (IUAM-style "Just a moment..." pages and the
+# managed/interactive challenge pages). Sites that just embed a
+# Turnstile widget for their own verification (Sportzino, Zula) won't
+# have these — the embedded path falls through to the script-tag check.
+_TURNSTILE_CTYPE_MARKERS = (
+    ("non-interactive", "cType: 'non-interactive'"),
+    ("managed", "cType: 'managed'"),
+    ("interactive", "cType: 'interactive'"),
+)
 
-    Once detected, waits for the ``cf-turnstile-response`` hidden input to
-    have a populated token — the standard widget surface even when the
-    visible UI is an iframe. With Camoufox stealth the invisible mode
-    typically auto-solves within a few seconds; a visible challenge
-    requires manual interaction (only relevant in ``--setup`` mode where
-    a human is driving).
+
+def _detect_turnstile_kind(page: Page) -> Optional[str]:
+    """Classify the Turnstile flavor on the current page.
+
+    Returns one of ``"non-interactive"``, ``"managed"``, ``"interactive"``,
+    ``"embedded"``, or ``None`` (no Turnstile). The first three indicate
+    a Cloudflare-fronted page (IUAM / managed-challenge); ``"embedded"``
+    means the site is just hosting a Turnstile widget. Mirrors scrapling's
+    ``_detect_cloudflare`` but reads the live DOM instead of a snapshot,
+    which avoids the timing race where the widget script hasn't mounted
+    yet when scrapling's 500ms wait fires.
+    """
+    try:
+        content = page.content() or ""
+    except BrowserError:
+        content = ""
+    for kind, marker in _TURNSTILE_CTYPE_MARKERS:
+        if marker in content:
+            return kind
+    if "challenges.cloudflare.com/turnstile/v" in content:
+        return "embedded"
+    # Fallback: DOM probe in case the widget mounted via JS injection
+    # (some sites build the script tag dynamically and it doesn't appear
+    # in the initial HTML snapshot).
+    try:
+        if page.evaluate(_TURNSTILE_DETECT_JS):
+            return "embedded"
+    except BrowserError:
+        pass
+    return None
+
+
+def _find_turnstile_widget(page: Page) -> Optional[Locator]:
+    """Locate a visible Turnstile widget container on the page.
+
+    Tries a list of common selectors in priority order and returns the
+    first visible match. Returns None if no widget is visible — the
+    caller should treat that as "challenge already gone or never rendered".
+    """
+    for selector in _TURNSTILE_WIDGET_SELECTORS:
+        try:
+            loc = page.locator(selector).first
+            if loc.count() > 0 and loc.is_visible():
+                log.debug("Found Turnstile widget via selector: %s", selector)
+                return loc
+        except BrowserError:
+            continue
+    return None
+
+
+def _click_turnstile_checkbox(page: Page, widget: Locator) -> bool:
+    """Click the visible checkbox inside a located Turnstile widget.
+
+    The widget content lives in a cross-origin iframe we can't address
+    directly, so we click via page coordinates: the widget's bounding
+    box plus a fixed offset where the checkbox sits in the stock theme.
+    The ``delay=60`` mirrors scrapling's solver and gives the widget's
+    JS handler time to register a real-looking mousedown→mouseup pair.
+
+    Returns True if the click was issued, False if the widget has no
+    bounding box (offscreen / display:none after our scroll).
+    """
+    try:
+        widget.scroll_into_view_if_needed(timeout=3000)
+    except BrowserError:
+        pass
+    page.wait_for_timeout(gaussian_random_delay(300))  # Settle after scroll.
+
+    box = widget.bounding_box()
+    if box is None:
+        log.warning("Turnstile widget has no bounding box; cannot click")
+        return False
+
+    cx = box["x"] + _TURNSTILE_CHECKBOX_OFFSET[0]
+    cy = box["y"] + _TURNSTILE_CHECKBOX_OFFSET[1]
+    log.info("Clicking Turnstile checkbox at (%d, %d)", cx, cy)
+    page.mouse.click(cx, cy, delay=60, button="left")
+    return True
+
+
+def wait_for_turnstile(
+    page: Page,
+    timeout: int = 30000,
+    auto_click_after_ms: Optional[int] = 5000,
+) -> bool:
+    """Wait for (and optionally actively solve) a Cloudflare Turnstile challenge.
+
+    Detects Turnstile by probing several DOM signals plus the page-content
+    ``cType`` markers that distinguish CF-fronted pages from sites that
+    just embed a widget. If none of those signals appear within a short
+    grace window the page is assumed not to use Turnstile and the function
+    returns immediately.
+
+    Solve flow:
+
+      1. If the response token is already populated, return True.
+      2. For ``non-interactive`` (the IUAM "Just a moment..." page), poll
+         until the title clears.
+      3. For ``embedded`` / ``managed`` / ``interactive`` widgets, wait up
+         to ``auto_click_after_ms`` for the invisible auto-pass.
+      4. If still unsolved, locate the widget container and click on the
+         visible checkbox via page coordinates. The standard widget
+         resolves within a few seconds of the click.
+      5. Continue waiting for the response token until the overall
+         ``timeout`` elapses.
+
+    Pass ``auto_click_after_ms=None`` to disable the active click and
+    behave like the legacy passive waiter — useful in ``--setup`` mode
+    where a human is driving and we don't want to race them.
 
     Args:
         page: Playwright page.
-        timeout: Max ms to wait for the token to be populated.
+        timeout: Total ms to wait for resolution (covers both the
+            auto-pass grace window and any post-click settle).
+        auto_click_after_ms: Grace window for invisible auto-pass before
+            we click the widget ourselves. ``None`` disables the click.
 
     Returns:
         True if Turnstile resolved (or wasn't present). False if it was
@@ -615,7 +761,7 @@ def wait_for_turnstile(page: Page, timeout: int = 30000) -> bool:
         try:
             page.wait_for_function(_TURNSTILE_DETECT_JS, timeout=5000)
             detected = True
-        except PlaywrightError:
+        except BrowserError:
             detected = False
 
     if not detected:
@@ -627,13 +773,57 @@ def wait_for_turnstile(page: Page, timeout: int = 30000) -> bool:
         log.debug("Turnstile already solved")
         return True
 
-    log.info("Waiting for Cloudflare Turnstile to resolve...")
+    kind = _detect_turnstile_kind(page) or "embedded"
+    log.info("Cloudflare Turnstile detected (kind=%s)", kind)
+
+    # IUAM-style "Just a moment..." doesn't have a clickable checkbox —
+    # CF's own JS resolves it once the browser passes its checks. We
+    # just poll for the title to change.
+    if kind == "non-interactive":
+        try:
+            page.wait_for_function(
+                "() => !document.title.includes('Just a moment')",
+                timeout=timeout,
+            )
+            log.info("Turnstile (non-interactive) cleared")
+            return True
+        except BrowserError:
+            log.warning("Non-interactive Turnstile did not clear in %dms", timeout)
+            return False
+
+    # Embedded / managed / interactive: try invisible auto-pass first.
+    grace = auto_click_after_ms if auto_click_after_ms is not None else timeout
+    grace = max(0, min(grace, timeout))
+    if grace > 0:
+        try:
+            log.info("Waiting up to %dms for Turnstile invisible auto-pass...", grace)
+            page.wait_for_function(_TURNSTILE_SOLVED_JS, timeout=grace)
+            log.info("Turnstile auto-passed")
+            return True
+        except BrowserError:
+            pass
+
+    # No auto-pass within the grace window — actively click the widget,
+    # unless caller disabled the click.
+    if auto_click_after_ms is None:
+        log.info("Auto-pass disabled; waiting passively for token...")
+    else:
+        widget = _find_turnstile_widget(page)
+        if widget is None:
+            log.warning(
+                "No Turnstile widget visible to click; falling back to passive wait"
+            )
+        else:
+            _click_turnstile_checkbox(page, widget)
+
+    # Final wait for the token (post-click or passive).
+    remaining = max(1000, timeout - grace)
     try:
-        page.wait_for_function(_TURNSTILE_SOLVED_JS, timeout=timeout)
+        page.wait_for_function(_TURNSTILE_SOLVED_JS, timeout=remaining)
         log.info("Turnstile resolved")
         return True
-    except PlaywrightError as e:
-        log.warning("Turnstile did not resolve in %dms: %s", timeout, str(e))
+    except BrowserError:
+        log.warning("Turnstile did not resolve within %dms total", timeout)
         return False
 
 
@@ -669,7 +859,7 @@ def google_oauth_login_page_make() -> Tuple[
         """
         try:
             popup.wait_for_load_state("domcontentloaded", timeout=10000)
-        except PlaywrightError:
+        except BrowserError:
             pass
 
         clicked_account = False
@@ -694,7 +884,7 @@ def google_oauth_login_page_make() -> Tuple[
                         clicked_account = True
                         popup.wait_for_timeout(1500)
                         continue
-                except PlaywrightError:
+                except BrowserError:
                     pass
 
             # 2. Consent / continue screen. Google uses different verbs
@@ -711,7 +901,7 @@ def google_oauth_login_page_make() -> Tuple[
                             clicked_confirm = True
                             popup.wait_for_timeout(1500)
                             break
-                    except PlaywrightError:
+                    except BrowserError:
                         continue
                 if clicked_confirm:
                     continue
@@ -730,7 +920,7 @@ def google_oauth_login_page_make() -> Tuple[
                         log.info("Entered Google email in popup")
                         popup.wait_for_timeout(1500)
                         continue
-                except PlaywrightError:
+                except BrowserError:
                     pass
             password = os.getenv("GOOGLE_PASSWORD")
             if password:
@@ -744,7 +934,7 @@ def google_oauth_login_page_make() -> Tuple[
                         log.info("Entered Google password in popup")
                         popup.wait_for_timeout(1500)
                         continue
-                except PlaywrightError:
+                except BrowserError:
                     pass
 
             popup.wait_for_timeout(500)
@@ -772,8 +962,11 @@ def google_oauth_login_page_make() -> Tuple[
         wait_for_turnstile(page, timeout=30000)
 
         google_button_selectors = [
-            "button.sso-button--gg",          # Zula-style SSO button class
+            "button.sso-button--gg",          # Zula-style SSO button class (Google modifier)
+            "button.sso-button",              # Sportzino-style: plain sso-button (only Google has it)
             "button:has-text('Sign in with Google')",
+            "button:has-text('Log in with Google')",
+            "button:has-text('Continue with Google')",
             "button:has-text('Google')",
             "a:has-text('Google')",
             "[class*='google'][class*='login']",
@@ -796,8 +989,16 @@ def google_oauth_login_page_make() -> Tuple[
             with page.context.expect_page(timeout=15000) as popup_info:
                 clicked = False
                 for selector in google_button_selectors:
+                    # ``count()`` is synchronous and doesn't wait — skip
+                    # non-matching selectors instantly. Without this the
+                    # 10s click-timeout fires once per miss, so a list of
+                    # 9 site-specific selectors could burn 80+ seconds
+                    # before reaching the one that matches.
+                    locator = page.locator(selector).first
+                    if locator.count() == 0:
+                        continue
                     try:
-                        page.locator(selector).first.click(
+                        locator.click(
                             delay=gaussian_random_delay(),
                             timeout=10000,
                             no_wait_after=True,
@@ -808,12 +1009,12 @@ def google_oauth_login_page_make() -> Tuple[
                         )
                         clicked = True
                         break
-                    except PlaywrightError:
+                    except BrowserError:
                         continue
                 if not clicked:
                     raise PlaywrightError("Could not find Google sign-in button")
             popup_page = popup_info.value
-        except PlaywrightError:
+        except BrowserError:
             # No popup opened — either the click failed, or the site uses a
             # same-tab redirect instead of a popup.
             popup_page = None
@@ -826,14 +1027,14 @@ def google_oauth_login_page_make() -> Tuple[
             try:
                 page.wait_for_load_state("networkidle", timeout=30000)
                 log.info("Google OAuth login completed successfully (popup)")
-            except PlaywrightError as e:
+            except BrowserError as e:
                 log.warning("Timeout waiting for post-OAuth load: %s", e)
             return
 
         # ---- Same-tab redirect fallback (legacy flow) ----
         try:
             page.wait_for_url("**/accounts.google.com/**", timeout=5000)
-        except PlaywrightError:
+        except BrowserError:
             log.info(
                 "No OAuth popup and no redirect to Google — session may "
                 "already be established"
@@ -955,7 +1156,7 @@ def make_generic_accept_or_close_modals(
                         button.click(delay=gaussian_random_delay(), timeout=5000)
                         # enabled_buttons = page.locator(main_enabled_selector)
                         claimed += 1
-                    except PlaywrightError as e:
+                    except BrowserError as e:
                         log.warning(
                             "clicking button failed... trying on next iterator: %s",
                             str(e),
@@ -968,7 +1169,7 @@ def make_generic_accept_or_close_modals(
                         #         close_button: Locator = close_buttons.last
                         #         close_button.click(delay=gaussian_random_delay(), timeout=3000)
                         #         wait_for_load_all_safe(page, timeout=1000)
-                        #     except PlaywrightError as close_err:
+                        #     except BrowserError as close_err:
                         #         log.debug("Could not close blocking modal: %s", str(close_err))
                 else:
                     log.info(
@@ -987,7 +1188,7 @@ def make_generic_accept_or_close_modals(
                 # close_buttons = page.locator(close_modal_selector)
 
             log.info("Successfully processed all modals!")
-        except PlaywrightError as e:
+        except BrowserError as e:
             log.error("Error clicking button for daily: %s", str(e))
 
         # Try to close the modal if it's still open
@@ -996,7 +1197,7 @@ def make_generic_accept_or_close_modals(
             if close_button.count() > 0:
                 close_button.first.click(delay=gaussian_random_delay(), timeout=3000)
                 log.info("Closed daily bonus modal")
-        except PlaywrightError:
+        except BrowserError:
             log.warning("Could not close daily bonus modal")
 
         return claimed
@@ -1006,12 +1207,20 @@ def make_generic_accept_or_close_modals(
 
 def make_simple_claim_button(
     btn_selector: str,
+    pre_open_selector: Optional[str] = None,
     post_claim_close_selector: Optional[str] = None,
 ) -> Callable[[Page], bool]:
     """Make a page action that clicks a single on-page claim button.
 
     Args:
         btn_selector: Selector for the claim button.
+        pre_open_selector: Optional selector for a notification / trigger
+            element that opens the claim dialog (e.g. a daily-bonus toast
+            or a header bonus button). Clicked only if the claim button
+            isn't already on screen — so this is a no-op when the dialog
+            auto-popped on page load and a real opener when it didn't.
+            ``pre_open_selector`` may be a comma-separated list of CSS
+            selectors; the first one that's visible wins.
         post_claim_close_selector: Optional selector for a confirmation
             modal's close button, clicked after a successful claim.
 
@@ -1022,17 +1231,67 @@ def make_simple_claim_button(
     """
 
     def simple_claim(page: Page) -> bool:
+        # Post-OAuth lobby hydration can take 5–15s as the React state
+        # subscribes to balance/bonus state. Wait for ANY of the pre-open
+        # triggers OR the claim button to become visible before deciding
+        # there's nothing to claim — otherwise an instant probe right
+        # after login bails on a page that just hasn't rendered yet.
+        candidate_selectors: List[str] = []
+        if pre_open_selector:
+            candidate_selectors.extend(
+                s.strip() for s in pre_open_selector.split(",") if s.strip()
+            )
+        candidate_selectors.append(btn_selector)
+        union_selector = ", ".join(candidate_selectors)
+        try:
+            page.locator(union_selector).first.wait_for(
+                state="visible", timeout=15000
+            )
+        except (AssertionError, BrowserError):
+            log.info(
+                "No claim entry-points visible after 15s; daily bonus already claimed or page not hydrated"
+            )
+            return False
+
+        # If a trigger selector is configured and the claim button isn't
+        # already visible (auto-pop didn't fire, or the user dismissed it
+        # earlier in the session), click the trigger to open the dialog.
+        if pre_open_selector:
+            try:
+                already_open = False
+                pre_check = page.locator(btn_selector).first
+                if pre_check.count() > 0 and pre_check.is_visible():
+                    already_open = True
+                if not already_open:
+                    for sel in (s.strip() for s in pre_open_selector.split(",")):
+                        if not sel:
+                            continue
+                        opener = page.locator(sel).first
+                        if opener.count() > 0 and opener.is_visible():
+                            log.info("Clicking pre-open trigger: %s", sel)
+                            opener.click(
+                                delay=gaussian_random_delay(), timeout=5000
+                            )
+                            wait_for_load_all_safe(page, timeout=3000)
+                            break
+                    else:
+                        log.debug(
+                            "No pre-open trigger visible; falling through to btn"
+                        )
+            except BrowserError as e:
+                log.debug("Pre-open click skipped: %s", e)
+
         try:
             btn: Locator = page.locator(btn_selector).first
             expect(btn).to_be_visible(timeout=5000)
-        except (AssertionError, PlaywrightError):
+        except (AssertionError, BrowserError):
             log.info("Claim button not visible; daily bonus likely already claimed")
             return False
 
         try:
             btn.click(delay=gaussian_random_delay(), timeout=5000)
             log.info("Clicked claim button")
-        except PlaywrightError as e:
+        except BrowserError as e:
             log.warning("Claim button click failed: %s", str(e))
             return False
 
@@ -1043,7 +1302,7 @@ def make_simple_claim_button(
                 close_btn = page.locator(post_claim_close_selector).first
                 if close_btn.count() > 0 and close_btn.is_visible():
                     close_btn.click(delay=gaussian_random_delay(), timeout=3000)
-            except PlaywrightError:
+            except BrowserError:
                 pass
 
         return True
@@ -1347,6 +1606,13 @@ class LoginConfig:
     login_submit_selector: str
     totp_code_selector: Optional[str] = None
     totp_submit_selector: Optional[str] = None
+    # Sugar over ``pre_login_callback`` for the common case of "click a
+    # header login button to navigate from the homepage to the actual
+    # /login page". Set this when ``login_url`` points at the site root
+    # and the OAuth PKCE challenge is minted client-side by the header
+    # button's onClick (Sportzino, Zula). Ignored if
+    # ``pre_login_callback`` is also set — the callback wins.
+    pre_login_click_selector: Optional[str] = None
     pre_login_callback: Optional[Callable[[Page], None]] = None
     post_login_callback: Optional[Callable[[Page], None]] = None
 
@@ -1377,9 +1643,20 @@ class SimpleClaimConfig:
     For sites where claiming is just "find and click one button on the page",
     with no wallet modal to open first and no cascade of other modals to
     dismiss afterward — e.g. SpinQuest's homepage "claim now" CTA.
+
+    The optional ``pre_open_selector`` extends this pattern to sites that
+    show a notification / trigger first (Sportzino: a ``daily-bonus-
+    notification`` toast OR an animated bottom-nav STORE button opens the
+    ``daily-bonus-dialog`` whose ``proceed-button`` is the actual claim).
+    The trigger only fires when the claim button isn't already visible —
+    so it's a no-op when the dialog auto-popped on page load.
     """
 
     btn_selector: str  # Claim button selector
+    # Optional opener clicked when btn_selector isn't already visible.
+    # CSS selector; comma-separated lets you list fallbacks (e.g. toast
+    # first, then store button) — the first visible one wins.
+    pre_open_selector: Optional[str] = None
     post_claim_close_selector: Optional[str] = None  # Optional confirmation-modal close
 
 

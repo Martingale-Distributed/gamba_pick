@@ -1,9 +1,11 @@
 from casino import (
+    BrowserError,
     CasinoConfig,
     CasinoAccountState,
     GenericClaimConfig,
     MTBClaimConfig,
     SimpleClaimConfig,
+    gaussian_random_delay,
     get_credentials,
     google_oauth_login_page_make,
     make_modal_tab_button,
@@ -38,6 +40,52 @@ def _default_oauth_profile_dir(name: str) -> str:
     path = Path("profiles") / slug
     path.mkdir(parents=True, exist_ok=True)
     return str(path.resolve())
+
+
+def _make_pre_login_click(selector: str) -> Callable[[Page], None]:
+    """Synthesize a pre-login callback from a single CSS selector.
+
+    Sites where ``login_url`` points at the homepage need a click on a
+    header login button to mint the OAuth PKCE challenge and navigate
+    to the real ``/login`` page. This helper turns the bare selector
+    from ``LoginConfig.pre_login_click_selector`` into the same shape
+    of callback users would otherwise hand-roll (cf. Zula's
+    ``click_header_login``).
+
+    The click uses ``no_wait_after=True`` — Playwright's default
+    post-click nav-wait creates a driver-side promise that orphans on
+    long redirects and crashes the Node side via its
+    unhandled-rejection handler. We observe the navigation explicitly
+    via ``wait_for_url``.
+    """
+
+    def click_pre_login(page: Page) -> None:
+        try:
+            loc = page.locator(selector).first
+            if loc.count() == 0 or not loc.is_visible():
+                log.info(
+                    "Pre-login trigger '%s' not visible; skipping (already on /login?)",
+                    selector,
+                )
+                return
+            loc.click(
+                delay=gaussian_random_delay(),
+                timeout=10000,
+                no_wait_after=True,
+            )
+            log.info("Clicked pre-login trigger: %s", selector)
+            try:
+                page.wait_for_url("**/login*", timeout=15000)
+                log.info("Reached /login page (url=%s)", page.url)
+            except BrowserError:
+                log.info(
+                    "Timed out waiting for /login navigation; current url=%s",
+                    page.url,
+                )
+        except BrowserError as e:
+            log.warning("Pre-login click failed: %s", str(e))
+
+    return click_pre_login
 
 def make_casino_automation(
     config: CasinoConfig,
@@ -107,6 +155,7 @@ def make_casino_automation(
             )
         claim_bonus_action = make_simple_claim_button(
             btn_selector=config.claim_config.btn_selector,
+            pre_open_selector=config.claim_config.pre_open_selector,
             post_claim_close_selector=config.claim_config.post_claim_close_selector,
         )
     else:  # generic
@@ -171,8 +220,14 @@ def make_casino_automation(
         # Build the login action: either form credentials or Google OAuth.
         # OAuth still honors the site's pre_login_callback (e.g. clicking
         # the header login button to reach the /login page) before handing
-        # off to the Google button-click + redirect flow.
+        # off to the Google button-click + redirect flow. If no callback
+        # is set but ``pre_login_click_selector`` is, synthesize a simple
+        # click-and-wait-for-/login handler from it.
         pre_login = config.login.pre_login_callback
+        if pre_login is None and config.login.pre_login_click_selector:
+            pre_login = _make_pre_login_click(
+                config.login.pre_login_click_selector
+            )
         post_login = config.login.post_login_callback
 
         if setup:

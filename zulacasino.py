@@ -97,7 +97,7 @@ def create_zulacasino_config() -> CasinoConfig:
         name="ZulaCasino",
         # No www — so url_to_env_prefix yields ZULACASINO (not WWW).
         url="https://zulacasino.com",
-        login_url="https://zulacasino.com",
+        login_url="https://zulacasino.com/login",
         description="Zula Casino Automation",
 
         login=LoginConfig(
@@ -172,7 +172,7 @@ def create_zulacasino_config() -> CasinoConfig:
         # and adds latency) without solving the real thing. Keep False and
         # rely on our own `wait_for_turnstile` at the right point in the
         # sequence.
-        solve_cloudflare=False,
+        solve_cloudflare=True,
         # Camoufox backend. The Chrome backend was tried as a Turnstile-
         # auto-pass workaround (see scrapling_ext.py for DynamicSession
         # plumbing) but also failed in practice — keeping the plumbing
