@@ -54,11 +54,14 @@ status = "working"
 module = "sportzino"
 
 [[site]]
-id = "fortune_coins"
-name = "Fortune Coins Casino"
-url = "https://www.fortunecoins.com"
+id = "fortune_wins"
+name = "Fortune Wins Casino"
+# Renamed from fortunecoins.com mid-2026 (was "Fortune Coins" in the
+# old project's master list).
+url = "https://fortunewins.com"
 affiliate_link = "https://www.fortunecoins.com/signup/adf122b4-d830-4479-ba4b-6ebee4d51f75"
-status = "juicy"
+status = "working"
+module = "fortunewins"
 
 [[site]]
 id = "lonestar_casino"
