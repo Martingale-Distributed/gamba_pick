@@ -95,9 +95,16 @@ def click_header_login(page: Page) -> None:
 def create_zulacasino_config() -> CasinoConfig:
     return CasinoConfig(
         name="ZulaCasino",
-        # No www — so url_to_env_prefix yields ZULACASINO (not WWW).
+        # ``url`` stays apex (no www) so url_to_env_prefix yields
+        # ZULACASINO and not WWW. ``login_url`` goes directly to the www
+        # host to skip the apex -> www redirect: scrapling's
+        # ResponseFactory hangs in ``_process_response_history`` on
+        # Camoufox/Firefox when iterating ``request.response()`` for a
+        # completed redirect (Chrome doesn't, which is why Sportzino
+        # exits cleanly). Bypassing the redirect by pointing fetch at
+        # the final host trivializes the redirect chain.
         url="https://zulacasino.com",
-        login_url="https://zulacasino.com/login",
+        login_url="https://www.zulacasino.com/login",
         description="Zula Casino Automation",
 
         login=LoginConfig(
