@@ -31,10 +31,17 @@ from selectors_generic import (
 
 # Scrapling routes ``browser_backend="chrome"`` + ``stealth=True`` through
 # patchright (a stealth-patched Playwright fork) whose error classes do
-# NOT inherit from playwright's. ``except BrowserError`` alone misses
+# NOT inherit from playwright's. ``except PlaywrightError`` alone misses
 # them and lets timeouts/navigation errors bubble out of our handlers.
 # This tuple is what we actually want to catch around any Page/Locator
 # call, regardless of which backend scrapling chose at runtime.
+#
+# IMPORTANT: ``BrowserError`` is itself a tuple. Python rejects NESTED
+# tuples in ``except`` clauses with ``TypeError: catching classes that
+# do not inherit from BaseException is not allowed`` — meaning
+# ``except (AssertionError, BrowserError):`` will raise at runtime even
+# though it looks fine. Flatten with concatenation:
+# ``except (AssertionError,) + BrowserError:``.
 try:
     from patchright.sync_api import Error as _PatchrightError
 
@@ -173,7 +180,7 @@ def make_get_casino_account_state(
                 page.locator(", ".join(union_selectors)).first.wait_for(
                     state="visible", timeout=15000
                 )
-            except (AssertionError, BrowserError):
+            except (AssertionError,) + BrowserError:
                 log.warning(
                     "No currency selectors visible after 15s; balance read may be 0"
                 )
@@ -1257,7 +1264,7 @@ def make_simple_claim_button(
             page.locator(union_selector).first.wait_for(
                 state="visible", timeout=15000
             )
-        except (AssertionError, BrowserError):
+        except (AssertionError,) + BrowserError:
             log.info(
                 "No claim entry-points visible after 15s; daily bonus already claimed or page not hydrated"
             )
@@ -1294,7 +1301,7 @@ def make_simple_claim_button(
         try:
             btn: Locator = page.locator(btn_selector).first
             expect(btn).to_be_visible(timeout=5000)
-        except (AssertionError, BrowserError):
+        except (AssertionError,) + BrowserError:
             log.info("Claim button not visible; daily bonus likely already claimed")
             return False
 
