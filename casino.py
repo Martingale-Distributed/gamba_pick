@@ -18,6 +18,16 @@ import os
 import logging
 from functools import lru_cache
 
+# Generic candidate lists used as fallbacks when a site config doesn't
+# pin a specific selector. Lives in its own module so we have a single
+# source of truth across action factories — see selectors_generic.py
+# for the philosophy (fail-loud-when-explicit, fall-back-when-unset).
+from selectors_generic import (
+    GOOGLE_OAUTH_BUTTON as _GENERIC_GOOGLE_OAUTH_BUTTON,
+    TURNSTILE_CHECKBOX_OFFSET as _TURNSTILE_CHECKBOX_OFFSET,
+    TURNSTILE_WIDGET as _TURNSTILE_WIDGET_SELECTORS,
+)
+
 
 # Scrapling routes ``browser_backend="chrome"`` + ``stealth=True`` through
 # patchright (a stealth-patched Playwright fork) whose error classes do
@@ -597,29 +607,6 @@ _TURNSTILE_SOLVED_JS = """() => {
   return !!(el && el.value && el.value.length > 10);
 }"""
 
-# Widget container selectors, in priority order. The active-click path
-# uses the first visible match's bounding box. CF's stock id varies
-# between ``cf_turnstile`` (underscore, scrapling default) and
-# ``cf-turnstile`` (hyphen, more common in the wild). The Stake-family
-# casino sites wrap the widget in their own class — those are listed
-# after the canonical ones so a page that has both prefers the real one.
-_TURNSTILE_WIDGET_SELECTORS = (
-    "div.cf-turnstile",
-    "div#cf_turnstile",
-    "div#cf-turnstile",
-    "div.login-turnstile",
-    ".login-form-content-turnstile",
-    "[class*='turnstile-container']",
-    "iframe[src*='challenges.cloudflare.com']",
-)
-
-# Where the visible checkbox sits inside the widget's bounding box. The
-# stock "compact" widget is ~300x65px with the checkbox in the upper
-# left at roughly (26, 25). This is the same offset scrapling's solver
-# uses for /login pages and works for both the canonical CF widget and
-# the Stake-family wrappers we've seen so far.
-_TURNSTILE_CHECKBOX_OFFSET = (26, 25)
-
 # Substring markers in page HTML that distinguish between the three
 # Cloudflare-managed challenge flavors. Only set on pages where CF
 # fronts the whole site (IUAM-style "Just a moment..." pages and the
@@ -961,17 +948,7 @@ def google_oauth_login_page_make() -> Tuple[
         # clicking before the widget goes green triggers a hard reject.
         wait_for_turnstile(page, timeout=30000)
 
-        google_button_selectors = [
-            "button.sso-button--gg",          # Zula-style SSO button class (Google modifier)
-            "button.sso-button",              # Sportzino-style: plain sso-button (only Google has it)
-            "button:has-text('Sign in with Google')",
-            "button:has-text('Log in with Google')",
-            "button:has-text('Continue with Google')",
-            "button:has-text('Google')",
-            "a:has-text('Google')",
-            "[class*='google'][class*='login']",
-            "[id*='google'][id*='login']",
-        ]
+        google_button_selectors = _GENERIC_GOOGLE_OAUTH_BUTTON
 
         # Watch for a popup opened by the click. ``expect_page`` races the
         # click against a new-page event in the same browser context.
