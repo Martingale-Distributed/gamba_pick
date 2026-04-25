@@ -112,3 +112,6 @@ bet_history/
 profiles/
 cloudflare_debug.png
 cloudflare_debug.html
+
+# runner.py output — append-only run history
+claim_history.jsonl
