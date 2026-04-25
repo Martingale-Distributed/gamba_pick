@@ -110,3 +110,5 @@ picks.env
 .omc/
 bet_history/
 profiles/
+cloudflare_debug.png
+cloudflare_debug.html
