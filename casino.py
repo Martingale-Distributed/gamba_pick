@@ -160,6 +160,24 @@ def make_get_casino_account_state(
                 delay=gaussian_random_delay(),
             )
 
+        # Hydration wait — same shape as simple_claim's union wait. Post-
+        # OAuth lobby hydration can take 5-15s as React subscribes to
+        # balance state, so probing instantly returns 0.0 for everything.
+        # Build a union of every configured selector and wait for at
+        # least one to be visible before reading.
+        union_selectors: List[str] = []
+        for currency in currency_display_config.currencies:
+            union_selectors.extend(currency.selectors)
+        if union_selectors:
+            try:
+                page.locator(", ".join(union_selectors)).first.wait_for(
+                    state="visible", timeout=15000
+                )
+            except (AssertionError, BrowserError):
+                log.warning(
+                    "No currency selectors visible after 15s; balance read may be 0"
+                )
+
         sweeps_coins = 0.0
         gold_coins = 0.0
         vip_level = "None"
@@ -171,11 +189,26 @@ def make_get_casino_account_state(
                 try:
                     element_selector = page.locator(selector)
                     if element_selector.count() > 0:
-                        text = element_selector.first.text_content().strip()
-                        # Remove currency symbols and parse
-                        text = text.replace(currency.code, "").replace(",", "").strip()
+                        raw = element_selector.first.text_content() or ""
+                        # Strip currency-code prefix and thousands separators
+                        # before float-parsing. Logs the raw text so a
+                        # mis-targeted selector (returning "" or junk) is
+                        # visible without a separate debug session.
+                        cleaned = (
+                            raw.strip()
+                            .replace(currency.code, "")
+                            .replace(",", "")
+                            .strip()
+                        )
+                        log.debug(
+                            "Currency %s selector %s: raw=%r cleaned=%r",
+                            currency.code,
+                            selector,
+                            raw,
+                            cleaned,
+                        )
                         try:
-                            n = float(text)
+                            n = float(cleaned)
                             log.info(f"Found {currency.name} balance: {n}")
                             if currency.code == "SC":
                                 sweeps_coins = n
