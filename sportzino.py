@@ -82,12 +82,16 @@ def create_sportzino_config() -> CasinoConfig:
         ),
         # Sportzino's logged-in header has a two-button balance switcher
         # (FC + GC always render side-by-side; only one is "active" /
-        # full-size at a time). For each currency we try two selectors:
-        # the ``balance-switcher-button-numbers`` span (active state, full
-        # animated number) and the ``balance-currency-icon-responsive-phone``
-        # span (inactive state, smaller icon view that still carries the
-        # text). The shared parser strips ``code`` prefix + commas so
-        # plain ``text_content()`` of either span works.
+        # full-size at a time).
+        #
+        # Targeting the DEEPEST ``> span`` is critical: the count-up
+        # animation wrapper holds multiple sibling spans (integer part,
+        # decimal part, possibly hidden audit values), so reading
+        # ``text_content()`` on the parent ``balance-switcher-button-
+        # numbers`` concatenates them all and gives garbage like
+        # ``43517260.00435173``. The leaf ``> span`` immediately under
+        # ``-number-count-up`` (active) or ``-icon-responsive-phone``
+        # (inactive) renders just the displayed digits.
         # NOTE: Sweeps Coins is called "Free Coins" (FC) internally,
         #       same as Zula.
         currency_display=CurrencyDisplayConfig(
@@ -96,16 +100,18 @@ def create_sportzino_config() -> CasinoConfig:
                     name="Sweeps Coins",
                     code="SC",
                     selectors=[
-                        "button.balance-switcher-button-fc span.balance-switcher-button-numbers",
-                        "button.balance-switcher-button-fc span.balance-currency-icon-responsive-phone",
+                        # Active state — count-up animation deepest span
+                        "button.balance-switcher-button-fc span.balance-switcher-button-number-count-up > span",
+                        # Inactive state — icon-responsive-phone deepest span
+                        "button.balance-switcher-button-fc span.balance-currency-icon-responsive-phone > span > span",
                     ],
                 ),
                 Currency(
                     name="Gold Coins",
                     code="GC",
                     selectors=[
-                        "button.balance-switcher-button-gc span.balance-switcher-button-numbers",
-                        "button.balance-switcher-button-gc span.balance-currency-icon-responsive-phone",
+                        "button.balance-switcher-button-gc span.balance-switcher-button-number-count-up > span",
+                        "button.balance-switcher-button-gc span.balance-currency-icon-responsive-phone > span > span",
                     ],
                 ),
             ],

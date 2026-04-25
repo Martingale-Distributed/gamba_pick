@@ -169,20 +169,23 @@ def make_get_casino_account_state(
 
         # Hydration wait — same shape as simple_claim's union wait. Post-
         # OAuth lobby hydration can take 5-15s as React subscribes to
-        # balance state, so probing instantly returns 0.0 for everything.
-        # Build a union of every configured selector and wait for at
-        # least one to be visible before reading.
+        # balance state. Wait for ``attached`` rather than ``visible``:
+        # count-up animation containers are sometimes styled with
+        # ``visibility:hidden`` while their inner spans render the
+        # digits, and Playwright's ``visible`` check returns False on
+        # the parent. ``text_content()`` works on hidden elements
+        # anyway — we just need them in the DOM.
         union_selectors: List[str] = []
         for currency in currency_display_config.currencies:
             union_selectors.extend(currency.selectors)
         if union_selectors:
             try:
                 page.locator(", ".join(union_selectors)).first.wait_for(
-                    state="visible", timeout=15000
+                    state="attached", timeout=15000
                 )
             except (AssertionError,) + BrowserError:
                 log.warning(
-                    "No currency selectors visible after 15s; balance read may be 0"
+                    "No currency selectors attached after 15s; balance read may be 0"
                 )
 
         sweeps_coins = 0.0
@@ -1304,6 +1307,17 @@ def make_simple_claim_button(
         except (AssertionError,) + BrowserError:
             log.info("Claim button not visible; daily bonus likely already claimed")
             return False
+
+        # Disabled-check: COLLECT becomes ``disabled`` once today's bonus
+        # is already claimed (Sportzino) — same pattern MTB uses. Without
+        # this, ``btn.click()`` waits the full 5s for the element to
+        # become enabled and only then times out.
+        try:
+            if btn.is_disabled():
+                log.info("Claim button disabled; daily bonus already claimed today")
+                return False
+        except BrowserError:
+            pass
 
         try:
             btn.click(delay=gaussian_random_delay(), timeout=5000)
