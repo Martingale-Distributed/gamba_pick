@@ -19,6 +19,8 @@ from casino import (
 from pathlib import Path
 from typing import Callable, Optional, Dict
 from playwright.sync_api import Page
+
+from selectors_generic import HEADER_LOGIN_BUTTON as _GENERIC_HEADER_LOGIN_BUTTON
 from scrapling.fetchers import DynamicSession, StealthySession
 from scrapling.engines.toolbelt.custom import Response
 from scrapling.cli import log
@@ -218,16 +220,32 @@ def make_casino_automation(
         additional_args: Dict = {}
 
         # Build the login action: either form credentials or Google OAuth.
-        # OAuth still honors the site's pre_login_callback (e.g. clicking
-        # the header login button to reach the /login page) before handing
-        # off to the Google button-click + redirect flow. If no callback
-        # is set but ``pre_login_click_selector`` is, synthesize a simple
-        # click-and-wait-for-/login handler from it.
+        # Pre-login resolution, in priority order (each beats the next):
+        #   1. ``pre_login_callback`` — caller hand-rolled a function;
+        #      use it verbatim.
+        #   2. ``pre_login_click_selector`` — caller named a specific
+        #      selector for the header login button; synthesize a
+        #      click-and-wait-for-/login handler from it.
+        #   3. **Generic fallback** — neither was set; fall back to the
+        #      shared ``HEADER_LOGIN_BUTTON`` candidate list from
+        #      selectors_generic. Logged at INFO so the implicit choice
+        #      is auditable. The synthesized click is a graceful no-op
+        #      when no candidate is visible (e.g. the site's login_url
+        #      already lands on /login), so this is always safe to try.
         pre_login = config.login.pre_login_callback
-        if pre_login is None and config.login.pre_login_click_selector:
-            pre_login = _make_pre_login_click(
-                config.login.pre_login_click_selector
-            )
+        if pre_login is None:
+            if config.login.pre_login_click_selector:
+                pre_login = _make_pre_login_click(
+                    config.login.pre_login_click_selector
+                )
+            else:
+                log.info(
+                    f"[{config.name}] No pre_login set; falling back to "
+                    "generic HEADER_LOGIN_BUTTON candidates"
+                )
+                pre_login = _make_pre_login_click(
+                    ", ".join(_GENERIC_HEADER_LOGIN_BUTTON)
+                )
         post_login = config.login.post_login_callback
 
         if setup:
