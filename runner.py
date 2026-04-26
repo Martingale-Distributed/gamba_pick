@@ -63,6 +63,12 @@ class Site:
     name: str
     url: str
     status: str
+    # Auth method for the site's CLI script. ``oauth`` adds
+    # ``--google-oauth``; ``form`` reads <SITEID>_USERNAME /
+    # <SITEID>_PASSWORD from .env via ``casino.get_credentials``.
+    # Default keeps backward compat with seed entries that predate
+    # this field.
+    auth: str = "oauth"
     module: Optional[str] = None
     affiliate_link: Optional[str] = None
 
@@ -129,7 +135,11 @@ def run_site(site: Site, opts: argparse.Namespace) -> RunResult:
     for a daily cron, not so much for high-frequency runs.
     """
     assert site.module, f"site {site.id} has no module"
-    cmd = [sys.executable, f"{site.module}.py", "--google-oauth"]
+    cmd = [sys.executable, f"{site.module}.py"]
+    if site.auth == "oauth":
+        cmd.append("--google-oauth")
+    # ``form`` auth: nothing extra on the CLI; the site script reads
+    # credentials from .env via casino.get_credentials.
     if opts.headless:
         cmd.append("--headless")
     if opts.skip_claim:
@@ -255,7 +265,7 @@ def main() -> int:
         f"{'no-claim' if opts.skip_claim else 'with-claim'}:"
     )
     for s in sites:
-        print(f"  - {s.id:20}  {s.module}.py")
+        print(f"  - {s.id:20}  {s.module}.py  ({s.auth})")
     print()
 
     if opts.dry_run:

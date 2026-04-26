@@ -18,6 +18,13 @@
 #   unknown  — site exists but its claim flow hasn't been mapped (the
 #              old project carried these as ``manual_input`` stubs).
 #
+# auth (only meaningful when status="working"):
+#   oauth — site uses Google OAuth; runner passes --google-oauth.
+#   form  — site uses email+password; runner relies on
+#           <SITEID>_USERNAME / <SITEID>_PASSWORD env vars (read by
+#           ``casino.get_credentials`` via the URL-derived prefix).
+#   default is "oauth".
+#
 # affiliate_link: kept for reference; affiliate-coded URLs are tied
 # to the operator's account in the old project. Not used by the
 # runner today.
@@ -27,6 +34,7 @@ id = "spinquest"
 name = "SpinQuest"
 url = "https://spinquest.com"
 status = "working"
+auth = "oauth"
 module = "spinquest"
 
 [[site]]
@@ -35,6 +43,7 @@ name = "Stake.us"
 url = "https://stake.us"
 affiliate_link = "https://stake.us/?c=vXzVKL4j"
 status = "working"
+auth = "oauth"
 module = "stake_us"
 
 [[site]]
@@ -43,6 +52,7 @@ name = "Zula Casino"
 url = "https://zulacasino.com"
 affiliate_link = "https://www.zulacasino.com/signup/b6cf5ee8-3374-4f86-9ee0-8d42e1a9e914"
 status = "working"
+auth = "oauth"
 module = "zulacasino"
 
 [[site]]
@@ -51,6 +61,7 @@ name = "Sportzino"
 url = "https://sportzino.com"
 affiliate_link = "https://sportzino.com/signup/58fa86ad-5f1c-49cc-9d13-26d1aa803f49"
 status = "working"
+auth = "oauth"
 module = "sportzino"
 
 [[site]]
@@ -61,6 +72,7 @@ name = "Fortune Wins Casino"
 url = "https://fortunewins.com"
 affiliate_link = "https://www.fortunecoins.com/signup/adf122b4-d830-4479-ba4b-6ebee4d51f75"
 status = "working"
+auth = "form"
 module = "fortunewins"
 
 [[site]]

@@ -116,16 +116,13 @@ def make_casino_automation(
         >>> main(headless=True, skip_claim=False, proxy=None, user_data_dir=None)
     """
 
-    # Create login action factory
-    login_action_factory = make_login_action_factory(
-        username_selector=config.login.username_selector,
-        password_selector=config.login.password_selector,
-        login_submit_selector=config.login.login_submit_selector,
-        totp_code_selector=config.login.totp_code_selector,
-        totp_submit_selector=config.login.totp_submit_selector,
-        pre_login_form_callback=config.login.pre_login_callback,
-        post_login_form_callback=config.login.post_login_callback,
-    )
+    # NOTE: ``login_action_factory`` is built later, inside ``main()``,
+    # after the per-call ``pre_login`` is resolved (it may be the raw
+    # ``pre_login_callback``, a synthesized click on
+    # ``pre_login_click_selector``, or the generic
+    # ``HEADER_LOGIN_BUTTON`` fallback). Building it up here would
+    # capture the raw callback and skip the latter two branches in
+    # the form-login path.
 
     # Create account state parser (use custom if provided, otherwise use default)
     if config.custom_balance_parser:
@@ -299,6 +296,19 @@ def make_casino_automation(
         else:
             username, password, totp_secret = get_credentials(
                 config.url, twofa=config.requires_2fa
+            )
+            # Build the form-login factory NOW (rather than at the top
+            # of make_casino_automation) so the resolved ``pre_login``
+            # — generic-fallback, click-selector-synthesized, or raw
+            # callback — gets threaded through.
+            login_action_factory = make_login_action_factory(
+                username_selector=config.login.username_selector,
+                password_selector=config.login.password_selector,
+                login_submit_selector=config.login.login_submit_selector,
+                totp_code_selector=config.login.totp_code_selector,
+                totp_submit_selector=config.login.totp_submit_selector,
+                pre_login_form_callback=pre_login,
+                post_login_form_callback=post_login,
             )
             login_action = login_action_factory(username, password, totp_secret)
 
