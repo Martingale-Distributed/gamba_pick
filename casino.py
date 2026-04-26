@@ -24,6 +24,7 @@ from functools import lru_cache
 # for the philosophy (fail-loud-when-explicit, fall-back-when-unset).
 from selectors_generic import (
     GOOGLE_OAUTH_BUTTON as _GENERIC_GOOGLE_OAUTH_BUTTON,
+    MODAL_CLOSE_BUTTON as _GENERIC_MODAL_CLOSE_BUTTON,
     TURNSTILE_CHECKBOX_OFFSET as _TURNSTILE_CHECKBOX_OFFSET,
     TURNSTILE_WIDGET as _TURNSTILE_WIDGET_SELECTORS,
 )
@@ -252,6 +253,124 @@ def make_get_casino_account_state(
         )
 
     return get_casino_account_state
+
+
+def make_dismiss_popup(
+    modal_selector: str,
+    close_selector: Optional[str] = None,
+    fallback_selector: Optional[str] = None,
+    timeout_ms: int = 8000,
+    name: Optional[str] = None,
+) -> Callable[[Page], None]:
+    """Build a callback that dismisses a single post-login popup.
+
+    Wired into ``LoginConfig.post_login_callback``. Sites in the
+    Stake-family routinely auto-pop a daily-bonus / welcome / promo
+    dialog right after login whose backdrop blocks subsequent header
+    clicks; this is the standard way to clear it.
+
+    Strategy (first that succeeds wins):
+
+      1. Wait up to ``timeout_ms`` for ``modal_selector`` to become
+         visible. If it doesn't appear, no-op cleanly (no popup
+         today, already dismissed, etc.).
+      2. Click ``close_selector`` if provided.
+      3. Try each generic candidate in
+         ``selectors_generic.MODAL_CLOSE_BUTTON`` (scoped *inside*
+         the modal so we don't accidentally click an unrelated
+         page-level close).
+      4. Press Escape.
+      5. Click ``fallback_selector`` if provided — useful for popups
+         whose only CTA is something like "GO TO COIN STORE" that
+         dismisses-as-side-effect.
+
+    Args:
+        modal_selector: CSS for the modal's root container. Whether
+            the popup is "there" is determined by this becoming
+            visible.
+        close_selector: Site-specific close button (e.g.
+            ``button.daily-bonus-dialog-close-button``). Optional;
+            generic + Escape are tried regardless.
+        fallback_selector: Last-resort click. Often a CTA that
+            navigates somewhere benign, dismissing the popup as a
+            side effect.
+        timeout_ms: How long to wait for the modal to appear.
+        name: Logged label so callers can tell which popup got
+            dismissed when stacking multiple ``make_dismiss_popup``
+            calls. Defaults to ``modal_selector``.
+    """
+    label = name or modal_selector
+
+    def dismiss_popup(page: Page) -> None:
+        try:
+            page.wait_for_selector(
+                modal_selector, state="visible", timeout=timeout_ms
+            )
+        except BrowserError:
+            log.info("[popup:%s] not present after %dms; skipping", label, timeout_ms)
+            return
+
+        modal = page.locator(modal_selector).first
+
+        # 1. Site-specific close button (fastest path when it works).
+        if close_selector:
+            close_btn = page.locator(close_selector).first
+            try:
+                if close_btn.count() > 0 and close_btn.is_visible():
+                    close_btn.click(delay=gaussian_random_delay(), timeout=3000)
+                    log.info(
+                        "[popup:%s] dismissed via close_selector %s",
+                        label,
+                        close_selector,
+                    )
+                    return
+            except BrowserError:
+                pass
+
+        # 2. Generic close buttons, scoped inside the modal so we
+        # don't click an unrelated page-level close.
+        for sel in _GENERIC_MODAL_CLOSE_BUTTON:
+            try:
+                cand = modal.locator(sel).first
+                if cand.count() > 0 and cand.is_visible():
+                    cand.click(delay=gaussian_random_delay(), timeout=3000)
+                    log.info("[popup:%s] dismissed via generic %s", label, sel)
+                    return
+            except BrowserError:
+                continue
+
+        # 3. Escape key.
+        try:
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(400)
+            if not modal.is_visible():
+                log.info("[popup:%s] dismissed via Escape", label)
+                return
+        except BrowserError:
+            pass
+
+        # 4. Last-resort fallback (often a CTA that dismisses as side effect).
+        if fallback_selector:
+            fb = page.locator(fallback_selector).first
+            try:
+                if fb.count() > 0 and fb.is_visible():
+                    fb.click(delay=gaussian_random_delay(), timeout=3000)
+                    log.info(
+                        "[popup:%s] dismissed via fallback %s",
+                        label,
+                        fallback_selector,
+                    )
+                    return
+            except BrowserError:
+                pass
+
+        log.warning(
+            "[popup:%s] visible but no dismissal strategy worked; "
+            "downstream actions may fail",
+            label,
+        )
+
+    return dismiss_popup
 
 
 def make_handle_google_one_tap_popup(

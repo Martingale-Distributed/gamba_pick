@@ -74,3 +74,21 @@ TURNSTILE_WIDGET: tuple[str, ...] = (
 # offset scrapling's solver uses for /login pages and works across the
 # canonical CF div and the Stake-family wrappers we've seen so far.
 TURNSTILE_CHECKBOX_OFFSET: tuple[int, int] = (26, 25)
+
+
+# Generic close-button candidates for dismissing arbitrary modals
+# (welcome popups, daily-bonus dialogs without a stable close class,
+# Google One Tap, etc.). Tried in order; first visible match wins.
+# Used as the default fallback list for ``make_dismiss_popup`` and
+# ``make_handle_google_one_tap_popup``.
+MODAL_CLOSE_BUTTON: tuple[str, ...] = (
+    "#close",
+    "div#close",
+    "[aria-label='Close']",
+    "[aria-label='close']",
+    "button[aria-label='Close']",
+    "button[aria-label='close']",
+    ".close",
+    ".modal-close",
+    "[data-testid='modal-close']",
+)
