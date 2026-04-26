@@ -550,6 +550,16 @@ def make_login_action_factory(
             page.fill(username_selector, username)
             page.fill(password_selector, password)
 
+            # The submit button on Stake-family /login pages is gated
+            # by Cloudflare Turnstile — it stays HTML-disabled until
+            # ``cf-turnstile-response`` has a populated token. Without
+            # this wait, ``page.click`` finds the locator but spins for
+            # the full timeout waiting for it to become enabled, then
+            # fails with "element is not enabled". Our solver clicks
+            # the checkbox if invisible auto-pass doesn't fire within
+            # the grace window, so this resolves inside ~10s typically.
+            wait_for_turnstile(page, timeout=30000)
+
             try:
                 page.click(
                     login_submit_selector, delay=gaussian_random_delay(), timeout=10000
