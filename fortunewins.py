@@ -36,15 +36,91 @@ Normal runs:
   python fortunewins.py --google-oauth [--headless]
 """
 
+from playwright.sync_api import Page
+
 from casino import (
+    BrowserError,
     CasinoConfig,
     Currency,
     CurrencyDisplayConfig,
     LoginConfig,
     MTBClaimConfig,
+    gaussian_random_delay,
     get_arg_parser,
+    log,
 )
 from scrapling_ext import make_casino_automation
+
+
+def dismiss_post_login_popup(page: Page) -> None:
+    """Dismiss the daily-bonus auto-popup that Fortune Wins shows
+    immediately after login.
+
+    The popup has a single "GO TO COIN STORE" CTA on a backdrop that
+    intercepts clicks on the header — without dismissing it the MTB
+    chain's modal click on ``.coin-store-button`` is blocked. Strategy
+    is "first thing that works wins":
+
+      1. Click ``.daily-bonus-dialog-close-button`` if rendered.
+      2. Press Escape (most modal libraries respect this).
+      3. As a last resort, click the proceed-button — this navigates
+         into the same coin-store flow that the MTB modal click would
+         open, so the subsequent MTB step is at worst a no-op.
+
+    If the dialog never appears (already claimed today, no daily bonus
+    available, etc.) we wait a brief grace window then move on.
+    """
+    # Give the React state a moment to hydrate the modal after the
+    # post-submit navigation. The dialog is typically rendered within
+    # 1-2s of landing on the lobby.
+    try:
+        page.wait_for_selector(
+            ".daily-bonus-dialog",
+            state="visible",
+            timeout=8000,
+        )
+    except BrowserError:
+        log.info("[FortuneWins] No daily-bonus-dialog post-login; nothing to dismiss")
+        return
+
+    # Try the dedicated close button first (cleanest dismissal).
+    close = page.locator("button.daily-bonus-dialog-close-button").first
+    try:
+        if close.count() > 0 and close.is_visible():
+            close.click(delay=gaussian_random_delay(), timeout=3000)
+            log.info("[FortuneWins] Dismissed daily-bonus-dialog via close button")
+            return
+    except BrowserError:
+        pass
+
+    # Most modal libraries listen for Escape on document.
+    try:
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(500)
+        if not page.locator(".daily-bonus-dialog").first.is_visible():
+            log.info("[FortuneWins] Dismissed daily-bonus-dialog via Escape key")
+            return
+    except BrowserError:
+        pass
+
+    # Fallback: click "GO TO COIN STORE" — same destination as the MTB
+    # modal click, so the next step is at worst a no-op.
+    proceed = page.locator("button.daily-bonus-dialog-proceed-button").first
+    try:
+        if proceed.count() > 0 and proceed.is_visible():
+            proceed.click(delay=gaussian_random_delay(), timeout=3000)
+            log.info(
+                "[FortuneWins] Closed daily-bonus-dialog via proceed-button "
+                "(navigates into coin store)"
+            )
+            return
+    except BrowserError:
+        pass
+
+    log.warning(
+        "[FortuneWins] daily-bonus-dialog visible but couldn't dismiss it; "
+        "MTB chain may fail downstream"
+    )
 
 
 def create_fortunewins_config() -> CasinoConfig:
@@ -66,6 +142,11 @@ def create_fortunewins_config() -> CasinoConfig:
             # selectors_generic.HEADER_LOGIN_BUTTON's text-based
             # fallback (``button:has-text("Log in")``). First real
             # exercise of the step-2 generic-fallback path.
+            #
+            # Fortune Wins shows a daily-bonus auto-popup right after
+            # login whose backdrop blocks the header. Dismiss it before
+            # MTB tries to click ``.coin-store-button``.
+            post_login_callback=dismiss_post_login_popup,
         ),
 
         # Identical to Zula. Both buttons render side-by-side; the
