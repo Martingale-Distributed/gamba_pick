@@ -34,7 +34,7 @@ id = "spinquest"
 name = "SpinQuest"
 url = "https://spinquest.com"
 status = "working"
-auth = "oauth"
+auth = "form"
 module = "spinquest"
 
 [[site]]
@@ -43,7 +43,7 @@ name = "Stake.us"
 url = "https://stake.us"
 affiliate_link = "https://stake.us/?c=vXzVKL4j"
 status = "working"
-auth = "oauth"
+auth = "form"
 module = "stake_us"
 
 [[site]]
