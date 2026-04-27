@@ -92,22 +92,25 @@ def create_fortunewins_config() -> CasinoConfig:
             post_login_callback=_dismiss_daily_bonus_popup,
         ),
 
-        # Identical to Zula. Both buttons render side-by-side; the
-        # active one has ``.active`` and shows the formatted number,
-        # the inactive one is empty until the user toggles. text_content
-        # of the parent yields ``GC831,899,071`` / ``FC0.06`` style;
-        # the shared parser strips the code prefix and commas.
+        # Same outer wrappers as Zula (``div.FCButtonItem.FCoins`` /
+        # ``.GCoins``), but Fortune Wins renders BOTH a
+        # ``.textDecimals.mobile`` (abbreviated like ``832499K``) and a
+        # ``.textDecimals.desktop`` (full ``832,499,071``) under each
+        # button — CSS controls which is visually shown. text_content
+        # of the parent yields the concatenation ``832499K832,499,071``,
+        # which the parser then mangles. Scope to ``.textDecimals.desktop``
+        # so we only see the full comma-formatted number.
         currency_display=CurrencyDisplayConfig(
             currencies=[
                 Currency(
                     name="Sweeps Coins",
                     code="SC",
-                    selectors=["div.FCButtonItem.FCoins"],
+                    selectors=["div.FCButtonItem.FCoins .textDecimals.desktop"],
                 ),
                 Currency(
                     name="Gold Coins",
                     code="GC",
-                    selectors=["div.FCButtonItem.GCoins"],
+                    selectors=["div.FCButtonItem.GCoins .textDecimals.desktop"],
                 ),
             ],
             currency_toggle_dropdown_selector=None,
