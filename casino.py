@@ -615,6 +615,11 @@ def make_modal_tab_button(
             else:
                 claim_btn.click(delay=gaussian_random_delay(), timeout=5000)
                 wait_for_load_all_safe(page, timeout=3000)
+                # Canonical success line for runner.parse_outcome — every
+                # claim factory should emit some form of "Daily bonus
+                # claimed." so the runner can categorize without per-flow
+                # vocabulary.
+                log.info("Daily bonus claimed.")
         except BrowserError as e:
             log.error("Exception occurred while claiming daily bonus: %s", str(e))
         finally:

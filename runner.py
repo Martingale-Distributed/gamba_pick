@@ -47,13 +47,44 @@ LOG_FILE = ROOT / "claim_history.jsonl"
 DEFAULT_TIMEOUT_S = 300  # 5 min per site
 
 # Patterns for extracting outcome from a casino script's stdout.
+#
+# Each claim factory in ``casino.py`` emits its own log vocabulary. The
+# regexes below cover the actual strings they emit — kept in one place
+# so adding a new claim factory means adding the line to one regex
+# rather than editing the runner.
+#
+# Vocabulary by factory:
+#   MTB         (make_mtb_claim_button)              "Daily bonus claimed.",
+#                                                    "Daily bonus already claimed.",
+#                                                    "Exception occurred while claiming daily bonus: ..."
+#   SimpleClaim (make_simple_claim_button)           "Clicked claim button",
+#                                                    "Claim button not visible; ...",
+#                                                    "Claim button disabled; ...",
+#                                                    "Claim button click failed: ..."
+#   Generic     (make_generic_accept_or_close_modals) "Successfully processed all modals!",
+#                                                    "Initial alerts popups timed out, ...
+#                                                     this likely means the daily bonus has
+#                                                     already been claimed.",
+#                                                    "Error clicking button for daily: ..."
 _RX_ACCOUNT = re.compile(r"Account State: SC: ([\d.]+), GC: ([\d.]+), VIP: (\S+)")
-_RX_CLAIMED = re.compile(r"daily bonus claimed successfully|Clicked claim button", re.I)
-_RX_ALREADY = re.compile(
-    r"already claimed|no daily bonus available|claim button (?:not visible|disabled)",
+_RX_CLAIMED = re.compile(
+    r"daily bonus claimed\."                # MTB canonical line ("Daily bonus claimed.")
+    r"|Clicked claim button"                # SimpleClaim
+    r"|Successfully processed all modals",  # Generic
     re.I,
 )
-_RX_ERROR = re.compile(r"error during bonus claim|claim button click failed", re.I)
+_RX_ALREADY = re.compile(
+    r"already (?:been )?claimed"             # MTB ("already claimed") + Generic ("already been claimed")
+    r"|no daily bonus available"
+    r"|claim button (?:not visible|disabled)",  # SimpleClaim
+    re.I,
+)
+_RX_ERROR = re.compile(
+    r"exception occurred while claiming"     # MTB
+    r"|claim button click failed"            # SimpleClaim
+    r"|error clicking button for daily",     # Generic
+    re.I,
+)
 _RX_DONE = re.compile(r"Casino action completed successfully")
 
 
