@@ -51,13 +51,17 @@ from scrapling_ext import make_casino_automation
 # Fortune Wins auto-shows ``.daily-bonus-dialog`` immediately after
 # login (single "GO TO COIN STORE" CTA, backdrop intercepts header
 # clicks). Without dismissal the MTB modal click on
-# ``.coin-store-button`` gets blocked. The fallback proceed-button
-# navigates into the same coin-store flow MTB targets, so it's safe
-# as a last resort.
+# ``.coin-store-button`` gets blocked.
+#
+# Close button is the Stake-family-shared ``button.close-popup-button``
+# (rendered as × via CSS rotation of a literal "+"). That class is in
+# selectors_generic.MODAL_CLOSE_BUTTON, so leaving ``close_selector``
+# unset lets the generic step find it. ``fallback_selector`` is the
+# "GO TO COIN STORE" CTA — last-resort path that navigates into the
+# coin-store flow MTB then resumes from cleanly.
 _dismiss_daily_bonus_popup = make_dismiss_popup(
     modal_selector=".daily-bonus-dialog",
-    close_selector="button.daily-bonus-dialog-close-button",
-    fallback_selector="button.daily-bonus-dialog-proceed-button",
+    fallback_selector='button:has-text("GO TO COIN STORE")',
     name="FortuneWins.daily-bonus-dialog",
 )
 

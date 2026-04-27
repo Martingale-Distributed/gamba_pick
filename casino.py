@@ -301,6 +301,20 @@ def make_dismiss_popup(
     """
     label = name or modal_selector
 
+    def _wait_gone(page: Page) -> bool:
+        """Confirm the popup is actually gone after a dismissal click.
+
+        Returns True if the modal selector resolves to hidden within
+        3s, False otherwise. Used as the success criterion so a click
+        that didn't actually dismiss (wrong button, animation only)
+        falls through to the next strategy instead of returning early.
+        """
+        try:
+            page.wait_for_selector(modal_selector, state="hidden", timeout=3000)
+            return True
+        except BrowserError:
+            return False
+
     def dismiss_popup(page: Page) -> None:
         try:
             page.wait_for_selector(
@@ -318,12 +332,13 @@ def make_dismiss_popup(
             try:
                 if close_btn.count() > 0 and close_btn.is_visible():
                     close_btn.click(delay=gaussian_random_delay(), timeout=3000)
-                    log.info(
-                        "[popup:%s] dismissed via close_selector %s",
-                        label,
-                        close_selector,
-                    )
-                    return
+                    if _wait_gone(page):
+                        log.info(
+                            "[popup:%s] dismissed via close_selector %s",
+                            label,
+                            close_selector,
+                        )
+                        return
             except BrowserError:
                 pass
 
@@ -334,22 +349,25 @@ def make_dismiss_popup(
                 cand = modal.locator(sel).first
                 if cand.count() > 0 and cand.is_visible():
                     cand.click(delay=gaussian_random_delay(), timeout=3000)
-                    log.info("[popup:%s] dismissed via generic %s", label, sel)
-                    return
+                    if _wait_gone(page):
+                        log.info("[popup:%s] dismissed via generic %s", label, sel)
+                        return
             except BrowserError:
                 continue
 
         # 3. Escape key.
         try:
             page.keyboard.press("Escape")
-            page.wait_for_timeout(400)
-            if not modal.is_visible():
+            if _wait_gone(page):
                 log.info("[popup:%s] dismissed via Escape", label)
                 return
         except BrowserError:
             pass
 
-        # 4. Last-resort fallback (often a CTA that dismisses as side effect).
+        # 4. Last-resort fallback. Often a CTA whose side effect is
+        # navigation (e.g. "GO TO COIN STORE"); the modal disappears
+        # because the page transitions, not because anything closes.
+        # Don't gate on _wait_gone here — caller knows the side effect.
         if fallback_selector:
             fb = page.locator(fallback_selector).first
             try:

@@ -81,7 +81,15 @@ TURNSTILE_CHECKBOX_OFFSET: tuple[int, int] = (26, 25)
 # Google One Tap, etc.). Tried in order; first visible match wins.
 # Used as the default fallback list for ``make_dismiss_popup`` and
 # ``make_handle_google_one_tap_popup``.
+#
+# ``close-popup-button`` is the shared Stake-family / Mediumrare close
+# class — same one MTBClaimConfig.close_btn_selector uses. Lives at
+# the .modal-dialog level inside the .modal.show outer shell, rendered
+# as "+" text rotated to × via CSS. Kept first among site-pattern
+# entries because it's the most reliable cross-site match we've seen.
 MODAL_CLOSE_BUTTON: tuple[str, ...] = (
+    "button.close-popup-button",                  # Stake-family (FortuneWins, Zula, Sportzino store)
+    "button.transparent-close-popup-button",      # Same button, alt class wrapper variant
     "#close",
     "div#close",
     "[aria-label='Close']",
