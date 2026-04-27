@@ -113,9 +113,17 @@ def main(
         # Claim daily bonus
         if not skip_claim:
             claim_bonus_action(page)
+        else:
+            # Canonical line for runner.parse_outcome — keeps stake_us
+            # (older-style script, doesn't use make_casino_automation)
+            # consistent with the framework's vocabulary.
+            log.info("[StakeUS] Skipping daily bonus claim (--skip-claim flag set)")
         wait_for_load_all_safe(page)
 
-        # You can add more actions here as needed
+        # Canonical DONE marker the runner uses to tell that the
+        # script reached completion. Emitted even if scrapling's
+        # post-action teardown later crashes with TargetClosedError.
+        log.info("[StakeUS] Casino action completed successfully")
 
     with StealthySession(
         proxy=proxy,
