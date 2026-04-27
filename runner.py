@@ -85,6 +85,9 @@ _RX_ERROR = re.compile(
     r"|error clicking button for daily",     # Generic
     re.I,
 )
+# Emitted when --skip-claim is passed (e.g. login + balance read only).
+# Distinguishes a deliberate skip from "we don't know what happened".
+_RX_SKIPPED = re.compile(r"Skipping daily bonus claim", re.I)
 _RX_DONE = re.compile(r"Casino action completed successfully")
 
 
@@ -134,6 +137,8 @@ def parse_outcome(stdout: str) -> tuple[Optional[float], Optional[float], str]:
       - ``claimed``         — the daily bonus was successfully claimed today.
       - ``already_claimed`` — claim attempted, the button was disabled / the
         flow logged "already claimed today" / "no daily bonus available".
+      - ``skipped``         — ``--skip-claim`` was passed; the script
+        deliberately did not attempt a claim (login + balance read only).
       - ``unknown``         — none of the above patterns matched (probably
         the script crashed before reaching the claim step, or used a log
         line we don't recognize yet).
@@ -147,6 +152,8 @@ def parse_outcome(stdout: str) -> tuple[Optional[float], Optional[float], str]:
         outcome = "already_claimed"
     elif _RX_CLAIMED.search(stdout):
         outcome = "claimed"
+    elif _RX_SKIPPED.search(stdout):
+        outcome = "skipped"
     else:
         outcome = "unknown"
     return sc, gc, outcome
