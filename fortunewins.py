@@ -104,9 +104,15 @@ def create_fortunewins_config() -> CasinoConfig:
         # full number.
         currency_display=CurrencyDisplayConfig(
             currencies=[
+                # Fortune Wins's redeemable currency is "Fortune Coins"
+                # (FC) — 1 FC = $0.01, distinct from a Sweeps Coin
+                # (1 SC = $1) on Sportzino / Zula. Same internal class
+                # name (``FCoins``) but a different unit; track it
+                # under its own currency code so the balance log isn't
+                # misleading.
                 Currency(
-                    name="Sweeps Coins",
-                    code="SC",
+                    name="Fortune Coins",
+                    code="FC",
                     activate_selector="div.FCButtonItem.FCoins button.FCButtonText",
                     selectors=["div.FCButtonItem.FCoins .textDecimals.desktop"],
                 ),

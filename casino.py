@@ -87,15 +87,44 @@ log = setup_logger()
 
 @dataclass
 class CasinoAccountState:
-    """Represents the current state of a Stake.us casino account."""
+    """Represents the current state of a casino account.
 
-    sweeps_coins: float = 0.0  # SC balance
-    gold_coins: float = 0.0  # GC balance
+    ``balances`` is keyed by the currency code declared in each
+    ``Currency`` config (``SC`` for Sweeps Coins, ``GC`` for Gold
+    Coins, ``FC`` for Fortune Wins's Fortune Coins, etc.). The
+    ``__str__`` form is the canonical line the runner's regex
+    parses, e.g.::
+
+        SC: 3.34, GC: 43562260.00, VIP: None
+
+    Currency codes are emitted in alphabetical order so a multi-
+    currency site (e.g. Fortune Wins with FC + GC) produces a
+    deterministic line shape.
+    """
+
+    balances: Dict[str, float] = field(default_factory=dict)
     vip_level: str = "None"  # VIP level (Bronze, Silver, Gold, Platinum, Diamond, etc.)
     vip_progress: Optional[float] = None  # Progress to next VIP level (0.0-1.0)
 
+    @property
+    def sweeps_coins(self) -> float:
+        """Back-compat shortcut for ``balances['SC']``."""
+        return self.balances.get("SC", 0.0)
+
+    @property
+    def gold_coins(self) -> float:
+        """Back-compat shortcut for ``balances['GC']``."""
+        return self.balances.get("GC", 0.0)
+
     def __str__(self) -> str:
-        return f"SC: {self.sweeps_coins:.2f}, GC: {self.gold_coins:.2f}, VIP: {self.vip_level}"
+        balance_pairs = ", ".join(
+            f"{code}: {value:.2f}" for code, value in sorted(self.balances.items())
+        )
+        # Empty-balances case still emits ``VIP: ...`` so the
+        # runner regex's ``Account State:`` anchor matches even
+        # when nothing was parsed.
+        prefix = f"{balance_pairs}, " if balance_pairs else ""
+        return f"{prefix}VIP: {self.vip_level}"
 
 
 class Currency:
@@ -190,8 +219,7 @@ def make_get_casino_account_state(
                     "No currency selectors attached after 30s; balance read may be 0"
                 )
 
-        sweeps_coins = 0.0
-        gold_coins = 0.0
+        balances: Dict[str, float] = {}
         vip_level = "None"
         vip_progress = None
 
@@ -271,10 +299,7 @@ def make_get_casino_account_state(
                         try:
                             n = float(cleaned)
                             log.info(f"Found {currency.name} balance: {n}")
-                            if currency.code == "SC":
-                                sweeps_coins = n
-                            elif currency.code == "GC":
-                                gold_coins = n
+                            balances[currency.code] = n
                             break
                         except ValueError:
                             continue
@@ -299,8 +324,7 @@ def make_get_casino_account_state(
             )
 
         return CasinoAccountState(
-            sweeps_coins=sweeps_coins,
-            gold_coins=gold_coins,
+            balances=balances,
             vip_level=vip_level,
             vip_progress=vip_progress,
         )
