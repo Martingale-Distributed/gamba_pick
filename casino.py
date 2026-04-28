@@ -1943,8 +1943,15 @@ class CasinoConfig:
     claim_config: MTBClaimConfig | GenericClaimConfig | SimpleClaimConfig
     claim_pattern: Literal["mtb", "generic", "simple"] = "mtb"
 
-    # Optional: Custom balance parser
-    custom_balance_parser: Optional[Callable[[Page], Dict[str, Optional[float]]]] = None
+    # Optional: Custom balance parser. Use this for sites whose
+    # currency-toggle pattern doesn't fit the default
+    # ``make_get_casino_account_state`` factory — e.g. SpinQuest,
+    # which has a toggle button + react-toastify confirmation
+    # ("You've switched to SweepsCoins/GoldCoins") rather than
+    # a per-currency activator. Should return a populated
+    # ``CasinoAccountState`` so the canonical "Account State: ..."
+    # log line shape stays consistent for the runner's regex.
+    custom_balance_parser: Optional[Callable[[Page], CasinoAccountState]] = None
 
     # Optional: Additional page actions to perform after standard flow
     additional_actions: Optional[List[Callable[[Page], None]]] = field(
