@@ -143,6 +143,13 @@ def create_zulacasino_config() -> CasinoConfig:
             ],
             currency_toggle_dropdown_selector=None,
             currency_toggle_switch_selector=None,
+            # Zula's lobby runs a JS count-up animation from a starting
+            # (cached?) value up to the actual balance — without a
+            # settle wait we read mid-animation and get a value that's
+            # a consistent ~30% of the final number. 3s of margin lets
+            # the count-up finish before we parse. Other sites in the
+            # working set don't show this pattern; default stays 0.
+            read_settle_ms=3000,
         ),
 
         # Daily claim lives in the Coin Store, opened by drilling down

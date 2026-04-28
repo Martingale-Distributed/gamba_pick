@@ -153,10 +153,27 @@ class CurrencyDisplayConfig:
         currencies: List[Currency],
         currency_toggle_dropdown_selector: Optional[str] = None,
         currency_toggle_switch_selector: Optional[str] = None,
+        read_settle_ms: int = 0,
     ):
+        """
+        Args:
+            currencies: Per-currency selector / activator configs.
+            currency_toggle_dropdown_selector: Optional dropdown to open
+                before reading balances (Stake.us-style wallet popover).
+            currency_toggle_switch_selector: Optional shared toggle to
+                cycle between currencies after each read.
+            read_settle_ms: Extra wait after the union hydration check
+                succeeds and before parsing values, to let count-up
+                animations finish. Zula renders a JS-driven count-up on
+                each lobby load that animates from a cached / starting
+                value up to the API's current balance — without this
+                wait we read mid-animation and get values that are a
+                consistent fraction of the real total.
+        """
         self.currencies = currencies
         self.currency_toggle_dropdown_selector = currency_toggle_dropdown_selector
         self.currency_toggle_switch_selector = currency_toggle_switch_selector
+        self.read_settle_ms = read_settle_ms
 
 
 close_selectors = [
@@ -218,6 +235,14 @@ def make_get_casino_account_state(
                 log.warning(
                     "No currency selectors attached after 30s; balance read may be 0"
                 )
+
+        # Site-specific settle wait — let JS-driven count-up animations
+        # finish before we read the value. Zula's lobby plays a count-up
+        # from a starting/cached value up to the API balance; without
+        # this wait we capture an intermediate value (consistently
+        # ~30% of the final number on Camoufox).
+        if currency_display_config.read_settle_ms:
+            page.wait_for_timeout(currency_display_config.read_settle_ms)
 
         balances: Dict[str, float] = {}
         vip_level = "None"
@@ -289,7 +314,14 @@ def make_get_casino_account_state(
                             .replace(",", "")
                             .strip()
                         )
-                        log.debug(
+                        # Logged at INFO so the runner's stderr_tail
+                        # captures the actual raw text even on success.
+                        # Useful for diagnosing wrong-value parses where
+                        # the selector matches but the rendered content
+                        # differs from what the user sees in their own
+                        # browser (e.g. Camoufox vs Chrome rendering, or
+                        # cached pre-API balances).
+                        log.info(
                             "Currency %s selector %s: raw=%r cleaned=%r",
                             currency.code,
                             selector,
