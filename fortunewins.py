@@ -3,9 +3,9 @@ Fortune Wins Automation Script
 ==============================
 
 Automates login + daily claim on fortunewins.com (formerly fortunecoins.com,
-renamed mid-2026). Same Stake-family / Mediumrare backend as Sportzino
-and Zula — same OAuth PKCE flow at ``/login``, same Cloudflare Turnstile
-gating, same SLNGApp client_id and ``/AuthCallback`` redirect.
+renamed mid-2026). On the same SLNGApp OAuth platform as Sportzino and
+Zula — same OAuth PKCE flow at ``/login``, same Cloudflare Turnstile
+gating, same ``client_id=SLNGApp`` and ``/AuthCallback`` redirect.
 
 Class scheme is closer to Zula than to Sportzino:
 
@@ -53,7 +53,7 @@ from scrapling_ext import make_casino_automation
 # clicks). Without dismissal the MTB modal click on
 # ``.coin-store-button`` gets blocked.
 #
-# Close button is the Stake-family-shared ``button.close-popup-button``
+# Close button is the SLNGApp-platform-shared ``button.close-popup-button``
 # (rendered as × via CSS rotation of a literal "+"). That class is in
 # selectors_generic.MODAL_CLOSE_BUTTON, so leaving ``close_selector``
 # unset lets the generic step find it. ``fallback_selector`` is the

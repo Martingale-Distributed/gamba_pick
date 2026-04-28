@@ -264,10 +264,10 @@ def make_dismiss_popup(
 ) -> Callable[[Page], None]:
     """Build a callback that dismisses a single post-login popup.
 
-    Wired into ``LoginConfig.post_login_callback``. Sites in the
-    Stake-family routinely auto-pop a daily-bonus / welcome / promo
-    dialog right after login whose backdrop blocks subsequent header
-    clicks; this is the standard way to clear it.
+    Wired into ``LoginConfig.post_login_callback``. Sites on the
+    SLNGApp OAuth platform routinely auto-pop a daily-bonus / welcome
+    / promo dialog right after login whose backdrop blocks subsequent
+    header clicks; this is the standard way to clear it.
 
     Strategy (first that succeeds wins):
 
@@ -692,7 +692,7 @@ def make_login_action_factory(
             page.fill(username_selector, username)
             page.fill(password_selector, password)
 
-            # The submit button on Stake-family /login pages is gated
+            # The submit button on SLNGApp-platform /login pages is gated
             # by Cloudflare Turnstile — it stays HTML-disabled until
             # ``cf-turnstile-response`` has a populated token. Without
             # this wait, ``page.click`` finds the locator but spins for
