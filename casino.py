@@ -169,9 +169,10 @@ def make_get_casino_account_state(
             )
 
         # Hydration wait — same shape as simple_claim's union wait. Post-
-        # OAuth lobby hydration can take 5-15s as React subscribes to
-        # balance state. Wait for ``attached`` rather than ``visible``:
-        # count-up animation containers are sometimes styled with
+        # OAuth lobby hydration can take 5-25s as React subscribes to
+        # balance state (SpinQuest is the slowest of the working set).
+        # Wait for ``attached`` rather than ``visible``: count-up
+        # animation containers are sometimes styled with
         # ``visibility:hidden`` while their inner spans render the
         # digits, and Playwright's ``visible`` check returns False on
         # the parent. ``text_content()`` works on hidden elements
@@ -182,11 +183,11 @@ def make_get_casino_account_state(
         if union_selectors:
             try:
                 page.locator(", ".join(union_selectors)).first.wait_for(
-                    state="attached", timeout=15000
+                    state="attached", timeout=30000
                 )
             except (AssertionError,) + BrowserError:
                 log.warning(
-                    "No currency selectors attached after 15s; balance read may be 0"
+                    "No currency selectors attached after 30s; balance read may be 0"
                 )
 
         sweeps_coins = 0.0
@@ -207,27 +208,43 @@ def make_get_casino_account_state(
         # Try to parse Stake Cash balance
         for currency in currency_display_config.currencies:
             # Per-currency activator: click to make this currency
-            # the active one before reading. Idempotent — clicking
-            # the already-active currency's button is a no-op on
-            # Sportzino. Sites that only render the active currency's
-            # value need this to surface the number we want to parse.
+            # the active one before reading. Two patterns supported:
+            #
+            #   * **Idempotent activate** (Sportzino, FortuneWins):
+            #     two side-by-side currency buttons; clicking the
+            #     already-active button is a no-op. ``is_active_selector``
+            #     can be left None and the click runs unconditionally.
+            #   * **Toggle activate** (SpinQuest): one button that
+            #     toggles between currencies on each click. Set
+            #     ``is_active_selector`` to a marker that's only
+            #     present when this currency is active so we skip
+            #     the click when already in the right state.
             if currency.activate_selector:
-                try:
-                    page.click(
-                        currency.activate_selector,
-                        delay=gaussian_random_delay(),
-                        timeout=5000,
-                    )
-                    # Count-up animation settles within ~500ms; give
-                    # 800ms margin so the placeholder span has the
-                    # final number when we read it.
-                    page.wait_for_timeout(800)
-                except BrowserError as e:
-                    log.debug(
-                        "activate_selector %s click failed: %s",
-                        currency.activate_selector,
-                        e,
-                    )
+                already_active = False
+                if currency.is_active_selector:
+                    try:
+                        if page.locator(currency.is_active_selector).count() > 0:
+                            already_active = True
+                    except BrowserError:
+                        pass
+
+                if not already_active:
+                    try:
+                        page.click(
+                            currency.activate_selector,
+                            delay=gaussian_random_delay(),
+                            timeout=5000,
+                        )
+                        # Count-up animation settles within ~500ms; give
+                        # 800ms margin so the value span has the final
+                        # number when we read it.
+                        page.wait_for_timeout(800)
+                    except BrowserError as e:
+                        log.debug(
+                            "activate_selector %s click failed: %s",
+                            currency.activate_selector,
+                            e,
+                        )
 
             for selector in currency.selectors:
                 try:

@@ -89,32 +89,39 @@ def create_spinquest_config() -> CasinoConfig:
             pre_login_callback=pre_login,
         ),
 
-        # The `amounts` button is a click-to-cycle switcher (no dropdown):
-        # each click toggles between the currencies shown in the same
-        # <p>. Leaving `dropdown_selector=None` tells the reader not to
-        # open/close anything, and setting `switch_selector` to the button
-        # itself makes the loop: read value -> click to switch -> read
-        # again -> click once more (cycles back to the starting currency,
-        # leaving the UI in its original state).
+        # The `amounts` button is a click-to-cycle switcher: one button
+        # that toggles between SC and GC each click. We use the
+        # framework's per-currency ``activate_selector`` (the button) +
+        # ``is_active_selector`` (a marker only present when this
+        # currency is the active one) so the loop is robust to
+        # whichever currency happens to be active when we land on the
+        # page:
+        #   - if the wanted currency is already active → skip the click
+        #   - otherwise → click once to toggle to it, then read
         #
-        # Order matters: SC is listed first because the default display on
-        # page load shows the green Sweeps Coins icon. If balances come
-        # back swapped, flip the order of the entries below.
+        # The ``is_active_selector`` is the per-currency MUI emotion
+        # class (``css-179u6ap`` / ``css-17oy78s``). Those hashes are
+        # stable across reloads but can change when SpinQuest rebuilds
+        # — re-probe and update if balances start coming back wrong.
         currency_display=CurrencyDisplayConfig(
             currencies=[
                 Currency(
                     name="Sweeps Coins",
                     code="SC",
+                    activate_selector='button[data-sentry-component="Amounts"]',
+                    is_active_selector='button[data-sentry-component="Amounts"] p.css-179u6ap',
                     selectors=['button[data-sentry-component="Amounts"] p'],
                 ),
                 Currency(
                     name="Gold Coins",
                     code="GC",
+                    activate_selector='button[data-sentry-component="Amounts"]',
+                    is_active_selector='button[data-sentry-component="Amounts"] p.css-17oy78s',
                     selectors=['button[data-sentry-component="Amounts"] p'],
                 ),
             ],
             currency_toggle_dropdown_selector=None,
-            currency_toggle_switch_selector='button[data-sentry-component="Amounts"]',
+            currency_toggle_switch_selector=None,
         ),
 
         claim_config=SimpleClaimConfig(
