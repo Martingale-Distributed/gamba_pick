@@ -130,7 +130,7 @@ class RunResult:
     timed_out: bool
     sc_balance: Optional[float]
     gc_balance: Optional[float]
-    claim_outcome: str  # claimed | already_claimed | error | unknown
+    claim_outcome: str  # claimed | already_claimed | skipped | error | unknown
     stdout_tail: str
     stderr_tail: str
 

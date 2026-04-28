@@ -649,6 +649,11 @@ def parse_flipclock(
         log.warning(
             "Flipclock not found on page (faucet likely ready): %s", str(e)[:100]
         )
+        # Without ``flipclock_element`` the rest of this function would hit
+        # ``UnboundLocalError``. Faucet-ready is the expected case here, so
+        # we surface ``None`` (the documented "no time remaining" signal)
+        # rather than raising.
+        return None
 
     # Query the flipclock digits from the live DOM
     active_digits_elements: List[ElementHandle] = flipclock_element.query_selector_all(

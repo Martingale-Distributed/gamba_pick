@@ -91,7 +91,7 @@ def _make_pre_login_click(selector: str) -> Callable[[Page], None]:
 
 def make_casino_automation(
     config: CasinoConfig,
-) -> Callable[[bool, bool, bool, Optional[str], Optional[str]], None]:
+) -> Callable[..., None]:
     """Factory function that creates a complete casino automation main function.
 
     This function takes a CasinoConfig and returns a ready-to-use main() function
