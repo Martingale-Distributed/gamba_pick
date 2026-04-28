@@ -194,8 +194,41 @@ def make_get_casino_account_state(
         vip_level = "None"
         vip_progress = None
 
+        # If any currency has its own ``activate_selector``, this site
+        # uses the inline-toggle pattern (Sportzino: clicking the
+        # inactive currency's own button activates it). In that case
+        # we drive activation per-currency below and skip the shared
+        # ``currency_toggle_switch_selector`` post-iteration click,
+        # which would either be redundant or close the wrong thing.
+        use_inline_activators = any(
+            c.activate_selector for c in currency_display_config.currencies
+        )
+
         # Try to parse Stake Cash balance
         for currency in currency_display_config.currencies:
+            # Per-currency activator: click to make this currency
+            # the active one before reading. Idempotent — clicking
+            # the already-active currency's button is a no-op on
+            # Sportzino. Sites that only render the active currency's
+            # value need this to surface the number we want to parse.
+            if currency.activate_selector:
+                try:
+                    page.click(
+                        currency.activate_selector,
+                        delay=gaussian_random_delay(),
+                        timeout=5000,
+                    )
+                    # Count-up animation settles within ~500ms; give
+                    # 800ms margin so the placeholder span has the
+                    # final number when we read it.
+                    page.wait_for_timeout(800)
+                except BrowserError as e:
+                    log.debug(
+                        "activate_selector %s click failed: %s",
+                        currency.activate_selector,
+                        e,
+                    )
+
             for selector in currency.selectors:
                 try:
                     element_selector = page.locator(selector)
@@ -231,7 +264,10 @@ def make_get_casino_account_state(
                 except Exception as e:
                     log.debug(f"Selector {selector} failed for {currency.name}: {e}")
                     continue
-            if currency_display_config.currency_toggle_switch_selector:
+            if (
+                currency_display_config.currency_toggle_switch_selector
+                and not use_inline_activators
+            ):
                 # Switch to next currency in dropdown
                 page.click(
                     currency_display_config.currency_toggle_switch_selector,
