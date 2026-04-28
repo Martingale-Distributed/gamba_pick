@@ -111,13 +111,15 @@ def read_spinquest_balances(page: Page) -> CasinoAccountState:
     toast_selector = "#root div.Toastify .Toastify__toast-body"
 
     # Wait for the Amounts button to mount before we start clicking.
-    # SpinQuest's lobby is the slowest of the working set; let it
-    # settle before the first toggle.
+    # SpinQuest's lobby is the slowest of the working set — login +
+    # full hydration regularly takes 30-50s on cold sessions, so the
+    # window has to be generous to avoid spurious empty reads.
     try:
-        page.wait_for_selector(amounts_btn_selector, state="visible", timeout=30000)
+        page.wait_for_selector(amounts_btn_selector, state="visible", timeout=60000)
     except BrowserError:
         log.warning(
-            "[SpinQuest] Amounts button never appeared; balances will be empty"
+            "[SpinQuest] Amounts button never appeared after 60s; "
+            "balances will be empty"
         )
         return CasinoAccountState(balances=balances)
 
@@ -222,7 +224,12 @@ def create_spinquest_config() -> CasinoConfig:
         # GeoComply cross-check (IP vs. navigator.geolocation vs. WebRTC vs.
         # timezone) agrees. Required to pass the regulatory-grade geo gate.
         geoip=True,
-        page_wait_timeout=5000,
+        # SpinQuest's lobby + balance hydration is the slowest of the
+        # working set (login submit → cookies → navigate → React init →
+        # balance fetch chain regularly takes 30-50s). Bumping
+        # ``page_wait_timeout`` so the post-login ``wait_for_load_all_safe``
+        # actually waits for the load to settle rather than racing it.
+        page_wait_timeout=60000,
         fetch_timeout=60000,
     )
 
