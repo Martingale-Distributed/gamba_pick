@@ -28,6 +28,13 @@
 # affiliate_link: kept for reference; affiliate-coded URLs are tied
 # to the operator's account in the old project. Not used by the
 # runner today.
+#
+# timeout_s (optional): per-site subprocess timeout override.
+# Defaults to the runner's ``--timeout-per-site`` value (300s).
+# Set tighter for sites with predictable teardown hangs (e.g. zula
+# via the scrapling/Camoufox redirect-response interaction): pick
+# a value just above typical work duration so SIGKILL fires shortly
+# after the DONE marker rather than waiting out the global default.
 
 [[site]]
 id = "spinquest"
@@ -54,6 +61,11 @@ affiliate_link = "https://www.zulacasino.com/signup/b6cf5ee8-3374-4f86-9ee0-8d42
 status = "working"
 auth = "oauth"
 module = "zulacasino"
+# Zula's teardown predictably hangs in scrapling's _process_response_history
+# (Camoufox + redirect chain). Work itself completes by ~30s; tighten the
+# timeout so the runner SIGKILLs the stuck cleanup loop quickly instead
+# of waiting out the 300s default. Remove once scrapling is vendor-patched.
+timeout_s = 90
 
 [[site]]
 id = "sportzino"

@@ -24,6 +24,10 @@ CLI:
     python runner.py --skip-claim             # login + balance read, no claim
     python runner.py --dry-run                # print the plan, don't execute
     python runner.py --timeout-per-site 600   # default 300s
+
+Per-site timeout overrides live in ``sites_seed.toml`` as the optional
+``timeout_s`` field; site-level values take precedence over
+``--timeout-per-site``.
 """
 
 from __future__ import annotations
@@ -105,6 +109,14 @@ class Site:
     auth: str = "oauth"
     module: Optional[str] = None
     affiliate_link: Optional[str] = None
+    # Per-site subprocess timeout override in seconds. ``None``
+    # means use the runner's ``--timeout-per-site`` global default.
+    # Useful for sites whose teardown predictably hangs (e.g. zula
+    # via the scrapling/Camoufox redirect-response interaction) —
+    # set this just above the typical work duration so SIGKILL
+    # fires shortly after the DONE marker rather than waiting out
+    # the global default.
+    timeout_s: Optional[int] = None
 
 
 @dataclass
@@ -183,6 +195,8 @@ def run_site(site: Site, opts: argparse.Namespace) -> RunResult:
     if opts.skip_claim:
         cmd.append("--skip-claim")
 
+    timeout_s = site.timeout_s if site.timeout_s is not None else opts.timeout_per_site
+
     start = time.monotonic()
     timed_out = False
     stdout = ""
@@ -194,7 +208,7 @@ def run_site(site: Site, opts: argparse.Namespace) -> RunResult:
             cwd=ROOT,
             capture_output=True,
             text=True,
-            timeout=opts.timeout_per_site,
+            timeout=timeout_s,
         )
         exit_code = result.returncode
         stdout = result.stdout
@@ -203,7 +217,7 @@ def run_site(site: Site, opts: argparse.Namespace) -> RunResult:
         timed_out = True
         stdout = e.stdout.decode() if isinstance(e.stdout, bytes) else (e.stdout or "")
         stderr = e.stderr.decode() if isinstance(e.stderr, bytes) else (e.stderr or "")
-        stderr += f"\n[runner] timed out after {opts.timeout_per_site}s"
+        stderr += f"\n[runner] timed out after {timeout_s}s"
 
     duration = time.monotonic() - start
     # casino.py's logger uses ``logging.StreamHandler()`` which defaults
@@ -276,7 +290,11 @@ def main() -> int:
         "--timeout-per-site",
         type=int,
         default=DEFAULT_TIMEOUT_S,
-        help=f"Per-site subprocess timeout in seconds (default {DEFAULT_TIMEOUT_S}).",
+        help=(
+            f"Default per-site subprocess timeout in seconds (default "
+            f"{DEFAULT_TIMEOUT_S}). Individual sites may override via "
+            f"the ``timeout_s`` field in the seed TOML."
+        ),
     )
     parser.add_argument(
         "--dry-run", action="store_true", help="Print the plan without running."
@@ -313,12 +331,13 @@ def main() -> int:
 
     print(
         f"Plan: {len(sites)} site(s) sequentially, "
-        f"timeout {opts.timeout_per_site}s each, "
+        f"default timeout {opts.timeout_per_site}s, "
         f"{'headless' if opts.headless else 'visible'}, "
         f"{'no-claim' if opts.skip_claim else 'with-claim'}:"
     )
     for s in sites:
-        print(f"  - {s.id:20}  {s.module}.py  ({s.auth})")
+        timeout_note = f"  [timeout {s.timeout_s}s]" if s.timeout_s is not None else ""
+        print(f"  - {s.id:20}  {s.module}.py  ({s.auth}){timeout_note}")
     print()
 
     if opts.dry_run:
