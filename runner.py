@@ -212,27 +212,26 @@ def run_site(site: Site, opts: argparse.Namespace) -> RunResult:
     # debugger can still tell what came from where.
     combined = f"{stdout}\n{stderr}"
     sc, gc, outcome = parse_outcome(combined)
-    # Relaxed completion criterion: we treat the run as ok if it
-    # reached the canonical ``Casino action completed successfully``
-    # marker, regardless of post-action exit code.
+    # Relaxed completion criterion: we treat the run as ok purely
+    # on whether it reached the canonical ``Casino action completed
+    # successfully`` marker, regardless of post-action exit code or
+    # subprocess timeout.
     #
     # Rationale: scrapling's ``_process_response_history`` iterates
     # redirect responses on session teardown and calls methods like
     # ``Response.all_headers()`` / ``Response.body()``; on Camoufox /
-    # Firefox these raise ``TargetClosedError`` when the underlying
-    # page is already closing. The crash exits the child with code 1
-    # AFTER all meaningful work (login, balance read, claim) has
-    # completed and the DONE marker has been logged. Failing the
-    # daily run on a teardown artifact is more noise than signal.
+    # Firefox these either raise ``TargetClosedError`` (exit_code=1)
+    # or block on per-redirect retries that exhaust the subprocess
+    # timeout (timed_out=True). Both modes happen AFTER all meaningful
+    # work (login, balance read, claim, DONE marker) has completed —
+    # failing the daily run on a teardown artifact is more noise
+    # than signal.
     #
-    # The non-zero ``exit_code`` is still captured in the JSONL
-    # record so a monitoring layer can flag the teardown frequency
-    # without paging on it. Future plan: vendor-patch scrapling to
-    # swallow the cleanup ``TargetClosedError`` at the source.
-    ok = (
-        not timed_out
-        and bool(_RX_DONE.search(combined))
-    )
+    # ``exit_code`` and ``timed_out`` are still captured in the JSONL
+    # record so monitoring can flag frequency without paging on it.
+    # Future plan: vendor-patch scrapling to short-circuit the
+    # cleanup loop / swallow ``TargetClosedError`` at the source.
+    ok = bool(_RX_DONE.search(combined))
 
     return RunResult(
         ts=datetime.now(timezone.utc).isoformat(timespec="seconds"),
