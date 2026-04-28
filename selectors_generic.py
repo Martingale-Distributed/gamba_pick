@@ -1,9 +1,10 @@
 """Generic selector candidate lists shared across casino sites.
 
 Most sweepstakes sites in this codebase are variants of the same template
-(Stake-family / Mediumrare-derived). They share the same auth shape,
-the same Cloudflare gating, similar header layouts, and similar coin-store
-/ daily-bonus flows — so each "what to click" point in the framework can
+— the SLNGApp OAuth platform (sites whose `/login` redirects with
+``client_id=SLNGApp``). They share the same auth shape, the same
+Cloudflare gating, similar header layouts, and similar coin-store /
+daily-bonus flows — so each "what to click" point in the framework can
 fall back to a candidate list that covers the variants we've actually
 seen, when a site config doesn't override it explicitly.
 
@@ -62,7 +63,7 @@ TURNSTILE_WIDGET: tuple[str, ...] = (
     "div#cf_turnstile",
     "div#cf-turnstile",
     "div.login-turnstile",                        # Sportzino / Zula wrapper
-    ".login-form-content-turnstile",              # Other Stake-family layouts
+    ".login-form-content-turnstile",              # Other SLNGApp-platform layouts
     "[class*='turnstile-container']",
     "iframe[src*='challenges.cloudflare.com']",
 )
@@ -72,7 +73,7 @@ TURNSTILE_WIDGET: tuple[str, ...] = (
 # checkbox. The stock "compact" Turnstile widget is ~300x65px with the
 # checkbox in the upper left at roughly (26, 25). This is the same
 # offset scrapling's solver uses for /login pages and works across the
-# canonical CF div and the Stake-family wrappers we've seen so far.
+# canonical CF div and the SLNGApp-platform wrappers we've seen so far.
 TURNSTILE_CHECKBOX_OFFSET: tuple[int, int] = (26, 25)
 
 
@@ -82,13 +83,13 @@ TURNSTILE_CHECKBOX_OFFSET: tuple[int, int] = (26, 25)
 # Used as the default fallback list for ``make_dismiss_popup`` and
 # ``make_handle_google_one_tap_popup``.
 #
-# ``close-popup-button`` is the shared Stake-family / Mediumrare close
-# class — same one MTBClaimConfig.close_btn_selector uses. Lives at
+# ``close-popup-button`` is the shared SLNGApp-platform close class —
+# same one MTBClaimConfig.close_btn_selector uses. Lives at
 # the .modal-dialog level inside the .modal.show outer shell, rendered
 # as "+" text rotated to × via CSS. Kept first among site-pattern
 # entries because it's the most reliable cross-site match we've seen.
 MODAL_CLOSE_BUTTON: tuple[str, ...] = (
-    "button.close-popup-button",                  # Stake-family (FortuneWins, Zula, Sportzino store)
+    "button.close-popup-button",                  # SLNGApp platform (FortuneWins, Zula, Sportzino)
     "button.transparent-close-popup-button",      # Same button, alt class wrapper variant
     "#close",
     "div#close",

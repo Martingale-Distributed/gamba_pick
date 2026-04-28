@@ -3,9 +3,9 @@ Fortune Wins Automation Script
 ==============================
 
 Automates login + daily claim on fortunewins.com (formerly fortunecoins.com,
-renamed mid-2026). Same Stake-family / Mediumrare backend as Sportzino
-and Zula — same OAuth PKCE flow at ``/login``, same Cloudflare Turnstile
-gating, same SLNGApp client_id and ``/AuthCallback`` redirect.
+renamed mid-2026). On the same SLNGApp OAuth platform as Sportzino and
+Zula — same OAuth PKCE flow at ``/login``, same Cloudflare Turnstile
+gating, same ``client_id=SLNGApp`` and ``/AuthCallback`` redirect.
 
 Class scheme is closer to Zula than to Sportzino:
 
@@ -53,7 +53,7 @@ from scrapling_ext import make_casino_automation
 # clicks). Without dismissal the MTB modal click on
 # ``.coin-store-button`` gets blocked.
 #
-# Close button is the Stake-family-shared ``button.close-popup-button``
+# Close button is the SLNGApp-platform-shared ``button.close-popup-button``
 # (rendered as × via CSS rotation of a literal "+"). That class is in
 # selectors_generic.MODAL_CLOSE_BUTTON, so leaving ``close_selector``
 # unset lets the generic step find it. ``fallback_selector`` is the
@@ -92,24 +92,34 @@ def create_fortunewins_config() -> CasinoConfig:
             post_login_callback=_dismiss_daily_bonus_popup,
         ),
 
-        # Same outer wrappers as Zula (``div.FCButtonItem.FCoins`` /
-        # ``.GCoins``), but Fortune Wins renders BOTH a
-        # ``.textDecimals.mobile`` (abbreviated like ``832499K``) and a
-        # ``.textDecimals.desktop`` (full ``832,499,071``) under each
-        # button — CSS controls which is visually shown. text_content
-        # of the parent yields the concatenation ``832499K832,499,071``,
-        # which the parser then mangles. Scope to ``.textDecimals.desktop``
-        # so we only see the full comma-formatted number.
+        # Same inline-toggle shape as Sportzino: the header shows only
+        # the *active* currency's value; the inactive side renders an
+        # empty button. Clicking the currency's own ``FCButtonText``
+        # button activates it (idempotent if already active). Each
+        # active button renders both a ``.textDecimals.mobile``
+        # (abbreviated ``832499K``) and a ``.textDecimals.desktop``
+        # (full ``832,499,071``) — CSS picks one visually but
+        # ``textContent`` concatenates both. Scope to
+        # ``.textDecimals.desktop`` to read only the comma-formatted
+        # full number.
         currency_display=CurrencyDisplayConfig(
             currencies=[
+                # Fortune Wins's redeemable currency is "Fortune Coins"
+                # (FC) — 1 FC = $0.01, distinct from a Sweeps Coin
+                # (1 SC = $1) on Sportzino / Zula. Same internal class
+                # name (``FCoins``) but a different unit; track it
+                # under its own currency code so the balance log isn't
+                # misleading.
                 Currency(
-                    name="Sweeps Coins",
-                    code="SC",
+                    name="Fortune Coins",
+                    code="FC",
+                    activate_selector="div.FCButtonItem.FCoins button.FCButtonText",
                     selectors=["div.FCButtonItem.FCoins .textDecimals.desktop"],
                 ),
                 Currency(
                     name="Gold Coins",
                     code="GC",
+                    activate_selector="div.FCButtonItem.GCoins button.FCButtonText",
                     selectors=["div.FCButtonItem.GCoins .textDecimals.desktop"],
                 ),
             ],

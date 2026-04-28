@@ -10,10 +10,11 @@
 # status:
 #   working  — Python module exists in this repo and runs end-to-end
 #              (login, balance read, daily-claim attempt, clean exit).
-#   juicy    — priority site to add next. All four current ``juicy``
-#              entries are Stake-family / Mediumrare-derived, sharing
-#              the OAuth-PKCE + Cloudflare-Turnstile + balance-switcher
-#              shape the framework already handles.
+#   juicy    — priority site to add next. Mix of operators (e.g.
+#              RealPlay's RealPrize/LoneStar; YayCasino TBD); whether
+#              the SLNGApp-platform selectors apply needs to be
+#              checked per site by inspecting the /login redirect's
+#              client_id.
 #   surveyed — in the master list, no module yet, no priority assigned.
 #   unknown  — site exists but its claim flow hasn't been mapped (the
 #              old project carried these as ``manual_input`` stubs).

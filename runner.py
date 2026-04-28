@@ -42,7 +42,7 @@ import tomllib
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 ROOT = Path(__file__).parent
 SEED_FILE = ROOT / "sites_seed.toml"
@@ -70,7 +70,21 @@ DEFAULT_TIMEOUT_S = 300  # 5 min per site
 #                                                     this likely means the daily bonus has
 #                                                     already been claimed.",
 #                                                    "Error clicking button for daily: ..."
-_RX_ACCOUNT = re.compile(r"Account State: SC: ([\d.]+), GC: ([\d.]+), VIP: (\S+)")
+# Account State line shapes (emitted by ``CasinoAccountState.__str__``):
+#
+#     Account State: SC: 3.34, GC: 43562260.00, VIP: None
+#     Account State: FC: 3.37, GC: 832889071.00, VIP: None     # FortuneWins
+#     Account State: VIP: None                                 # empty balances
+#
+# The balance segment is optional — when a script crashes before
+# any currency parses, the line still gets emitted with just the
+# VIP suffix and we want to keep parsing it (empty balances dict +
+# whatever outcome class fell out). We extract every
+# ``<CODE>: <number>`` pair from the optional segment into a
+# balances dict, generic over currency types so adding a new code
+# (FC, anything in the future) requires no runner change.
+_RX_ACCOUNT_LINE = re.compile(r"Account State: (?:(.*?), )?VIP: (\S+)")
+_RX_ACCOUNT_PAIR = re.compile(r"\b([A-Z]{2,4}): ([\d.]+)\b")
 _RX_CLAIMED = re.compile(
     r"daily bonus claimed\."                # MTB canonical line ("Daily bonus claimed.")
     r"|Clicked claim button"                # SimpleClaim
@@ -128,8 +142,11 @@ class RunResult:
     exit_code: int
     duration_s: float
     timed_out: bool
-    sc_balance: Optional[float]
-    gc_balance: Optional[float]
+    # Currency-code → value (e.g. ``{"SC": 3.34, "GC": 43562260.0}``).
+    # Generic over currency types — adds FC for FortuneWins, etc.
+    # Empty dict if the script crashed before emitting an Account State
+    # line.
+    balances: Dict[str, float]
     claim_outcome: str  # claimed | already_claimed | skipped | error | unknown
     stdout_tail: str
     stderr_tail: str
@@ -141,8 +158,13 @@ def load_sites(path: Path = SEED_FILE) -> List[Site]:
     return [Site(**s) for s in data["site"]]
 
 
-def parse_outcome(stdout: str) -> tuple[Optional[float], Optional[float], str]:
-    """Pull SC/GC balance + claim outcome out of a captured stdout blob.
+def parse_outcome(stdout: str) -> tuple[Dict[str, float], str]:
+    """Pull all currency balances + claim outcome out of a stdout blob.
+
+    Returns ``({code: value, ...}, outcome)``. Currency codes come
+    straight from the site's ``Currency.code`` config (e.g. ``SC``,
+    ``GC``, ``FC``) — generic over types, so adding a new currency
+    code in a site config requires no runner change.
 
     Outcome categories, checked in priority order:
       - ``error``           — claim attempted but the click or framework raised.
@@ -155,9 +177,16 @@ def parse_outcome(stdout: str) -> tuple[Optional[float], Optional[float], str]:
         the script crashed before reaching the claim step, or used a log
         line we don't recognize yet).
     """
-    m = _RX_ACCOUNT.search(stdout)
-    sc = float(m.group(1)) if m else None
-    gc = float(m.group(2)) if m else None
+    balances: Dict[str, float] = {}
+    line_match = _RX_ACCOUNT_LINE.search(stdout)
+    # group(1) is the optional balance segment — None when the line
+    # had no balances (e.g. ``Account State: VIP: None``).
+    if line_match and line_match.group(1):
+        for code, raw_value in _RX_ACCOUNT_PAIR.findall(line_match.group(1)):
+            try:
+                balances[code] = float(raw_value)
+            except ValueError:
+                continue
     if _RX_ERROR.search(stdout):
         outcome = "error"
     elif _RX_ALREADY.search(stdout):
@@ -168,7 +197,7 @@ def parse_outcome(stdout: str) -> tuple[Optional[float], Optional[float], str]:
         outcome = "skipped"
     else:
         outcome = "unknown"
-    return sc, gc, outcome
+    return balances, outcome
 
 
 def run_site(site: Site, opts: argparse.Namespace) -> RunResult:
@@ -225,7 +254,7 @@ def run_site(site: Site, opts: argparse.Namespace) -> RunResult:
     # Parse the union — keep the streams separate in the record so a
     # debugger can still tell what came from where.
     combined = f"{stdout}\n{stderr}"
-    sc, gc, outcome = parse_outcome(combined)
+    balances, outcome = parse_outcome(combined)
     # Relaxed completion criterion: we treat the run as ok purely
     # on whether it reached the canonical ``Casino action completed
     # successfully`` marker, regardless of post-action exit code or
@@ -255,8 +284,7 @@ def run_site(site: Site, opts: argparse.Namespace) -> RunResult:
         exit_code=exit_code,
         duration_s=round(duration, 2),
         timed_out=timed_out,
-        sc_balance=sc,
-        gc_balance=gc,
+        balances=balances,
         claim_outcome=outcome,
         stdout_tail="\n".join(stdout.splitlines()[-20:]),
         stderr_tail="\n".join(stderr.splitlines()[-20:]),
@@ -349,9 +377,13 @@ def main() -> int:
         result = run_site(site, opts)
         append_history(result, opts.log_file)
         flag = "ok" if result.ok else ("timeout" if result.timed_out else "fail")
+        # Render balances in alphabetical order for deterministic
+        # output (matches CasinoAccountState.__str__).
         bal = ""
-        if result.sc_balance is not None or result.gc_balance is not None:
-            bal = f"  SC={result.sc_balance} GC={result.gc_balance}"
+        if result.balances:
+            bal = "  " + " ".join(
+                f"{code}={value}" for code, value in sorted(result.balances.items())
+            )
         print(
             f"  -> {flag}  {result.duration_s}s  claim={result.claim_outcome}{bal}",
             flush=True,

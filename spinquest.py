@@ -29,9 +29,13 @@ Usage
 python spinquest.py [--headless] [--skip-claim] [--user-data-dir PATH]
 """
 
+from typing import Dict
+
 from playwright.sync_api import Page
 
 from casino import (
+    BrowserError,
+    CasinoAccountState,
     CasinoConfig,
     Currency,
     CurrencyDisplayConfig,
@@ -73,6 +77,111 @@ def pre_login(page: Page) -> None:
     open_login_modal(page)
 
 
+def read_spinquest_balances(page: Page) -> CasinoAccountState:
+    """Read SpinQuest's SC + GC balances by toggling and classifying.
+
+    SpinQuest's header has a single ``button[data-sentry-component=
+    "Amounts"]`` that toggles between SC and GC on each click. We
+    toggle twice (returning the UI to its pre-call state) and read
+    the displayed value each time, then classify each value by its
+    format:
+
+      * Strings with a decimal point (e.g. ``3.05``) → SC. Sweeps
+        Coins are dollar-equivalent and always display two decimals.
+      * Strings without a decimal (e.g. ``1,090,000``) → GC. Gold
+        Coins are integer-formatted with thousands separators.
+
+    The classifier is locale-independent — earlier attempts using
+    the post-toggle Toastify text ("You've switched to ...") broke
+    when Camoufox's geo-derived locale switched the message to
+    Spanish. The numeric format stays put.
+
+    The MUI emotion class hashes (``css-179u6ap`` for SC,
+    ``css-17oy78s`` for GC) are also avoided since they churn on
+    every site rebuild.
+    """
+    balances: Dict[str, float] = {}
+    amounts_btn_selector = 'button[data-sentry-component="Amounts"]'
+
+    # Wait for the Amounts button to mount before we start clicking.
+    # SpinQuest's lobby is the slowest of the working set — login +
+    # full hydration regularly takes 30-50s on cold sessions, so the
+    # window has to be generous to avoid spurious empty reads.
+    try:
+        page.wait_for_selector(amounts_btn_selector, state="visible", timeout=60000)
+    except BrowserError:
+        log.warning(
+            "[SpinQuest] Amounts button never appeared after 60s; "
+            "balances will be empty"
+        )
+        return CasinoAccountState(balances=balances)
+
+    # Track successful toggles so the restore step at the end can
+    # leave the UI in its initial state regardless of where the
+    # loop bailed out — an unconditional final click would flip
+    # past the start when no toggle ever succeeded.
+    toggles_done = 0
+    for i in range(2):
+        if i > 0:
+            try:
+                page.click(
+                    amounts_btn_selector,
+                    delay=gaussian_random_delay(),
+                    timeout=5000,
+                )
+                toggles_done += 1
+                # Brief wait for the value display to update after
+                # the toggle.
+                page.wait_for_timeout(500)
+            except BrowserError as e:
+                log.warning("[SpinQuest] toggle click failed: %s", e)
+                break
+
+        try:
+            value_text = (
+                page.locator(f"{amounts_btn_selector} p").first.text_content() or ""
+            ).strip()
+        except BrowserError as e:
+            log.warning("[SpinQuest] couldn't read value text: %s", e)
+            continue
+
+        # Classify by format — decimal => SC, integer => GC.
+        if "." in value_text:
+            code = "SC"
+        elif value_text:
+            code = "GC"
+        else:
+            log.warning("[SpinQuest] empty value text on iter %d", i)
+            continue
+
+        try:
+            n = float(value_text.replace(",", ""))
+        except ValueError:
+            log.warning("[SpinQuest] couldn't parse value %r as float", value_text)
+            continue
+
+        if code in balances:
+            log.warning(
+                "[SpinQuest] re-read same currency code %s on iter %d "
+                "(both reads classified the same way: was %s, now %s); "
+                "toggle may not have flipped",
+                code, i, balances[code], n,
+            )
+        balances[code] = n
+        log.info("Found %s balance: %s", code, n)
+
+    # Restore initial UI state: the toggle is binary, so if we did
+    # an odd number of successful toggles we need one more to get
+    # back; an even count (including zero) is already balanced.
+    if toggles_done % 2 == 1:
+        try:
+            page.click(amounts_btn_selector, delay=gaussian_random_delay(), timeout=5000)
+        except BrowserError:
+            pass
+
+    return CasinoAccountState(balances=balances)
+
+
 def create_spinquest_config() -> CasinoConfig:
     return CasinoConfig(
         name="SpinQuest",
@@ -89,33 +198,25 @@ def create_spinquest_config() -> CasinoConfig:
             pre_login_callback=pre_login,
         ),
 
-        # The `amounts` button is a click-to-cycle switcher (no dropdown):
-        # each click toggles between the currencies shown in the same
-        # <p>. Leaving `dropdown_selector=None` tells the reader not to
-        # open/close anything, and setting `switch_selector` to the button
-        # itself makes the loop: read value -> click to switch -> read
-        # again -> click once more (cycles back to the starting currency,
-        # leaving the UI in its original state).
-        #
-        # Order matters: SC is listed first because the default display on
-        # page load shows the green Sweeps Coins icon. If balances come
-        # back swapped, flip the order of the entries below.
+        # The Amounts button is a single toggle (one click flips
+        # between SC and GC) — neither the per-currency ``activator``
+        # pattern (Sportzino) nor a stable ``is_active_selector``
+        # (the only differentiator is MUI's hashed emotion class,
+        # which churns on every site rebuild) work reliably. Instead,
+        # ``custom_balance_parser=read_spinquest_balances`` below
+        # toggles, reads the displayed value, and classifies by
+        # numeric format (decimal => SC, integer => GC). The
+        # ``Currency`` entries here are documentation only — the
+        # custom parser ignores ``currency_display_config`` entirely.
         currency_display=CurrencyDisplayConfig(
             currencies=[
-                Currency(
-                    name="Sweeps Coins",
-                    code="SC",
-                    selectors=['button[data-sentry-component="Amounts"] p'],
-                ),
-                Currency(
-                    name="Gold Coins",
-                    code="GC",
-                    selectors=['button[data-sentry-component="Amounts"] p'],
-                ),
+                Currency(name="Sweeps Coins", code="SC", selectors=[]),
+                Currency(name="Gold Coins", code="GC", selectors=[]),
             ],
             currency_toggle_dropdown_selector=None,
-            currency_toggle_switch_selector='button[data-sentry-component="Amounts"]',
+            currency_toggle_switch_selector=None,
         ),
+        custom_balance_parser=read_spinquest_balances,
 
         claim_config=SimpleClaimConfig(
             btn_selector='button[data-sentry-element="HomeCtaCardButton"]:has-text("claim")',
@@ -127,7 +228,12 @@ def create_spinquest_config() -> CasinoConfig:
         # GeoComply cross-check (IP vs. navigator.geolocation vs. WebRTC vs.
         # timezone) agrees. Required to pass the regulatory-grade geo gate.
         geoip=True,
-        page_wait_timeout=5000,
+        # SpinQuest's lobby + balance hydration is the slowest of the
+        # working set (login submit → cookies → navigate → React init →
+        # balance fetch chain regularly takes 30-50s). Bumping
+        # ``page_wait_timeout`` so the post-login ``wait_for_load_all_safe``
+        # actually waits for the load to settle rather than racing it.
+        page_wait_timeout=60000,
         fetch_timeout=60000,
     )
 

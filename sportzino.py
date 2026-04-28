@@ -87,11 +87,13 @@ def create_sportzino_config() -> CasinoConfig:
         # Targeting the DEEPEST ``> span`` is critical: the count-up
         # animation wrapper holds multiple sibling spans (integer part,
         # decimal part, possibly hidden audit values), so reading
-        # ``text_content()`` on the parent ``balance-switcher-button-
-        # numbers`` concatenates them all and gives garbage like
-        # ``43517260.00435173``. The leaf ``> span`` immediately under
-        # ``-number-count-up`` (active) or ``-icon-responsive-phone``
-        # (inactive) renders just the displayed digits.
+        # Sportzino only renders the *active* currency's value in the
+        # header — the inactive button shows just the currency badge
+        # with no number. To read both balances we use the framework's
+        # per-currency ``activate_selector``: clicking a currency's
+        # own button activates it (idempotent if already active);
+        # ``span.balance-switcher-button-number-placeholder`` then
+        # holds the post count-up final number cleanly.
         # NOTE: Sweeps Coins is called "Free Coins" (FC) internally,
         #       same as Zula.
         currency_display=CurrencyDisplayConfig(
@@ -99,19 +101,17 @@ def create_sportzino_config() -> CasinoConfig:
                 Currency(
                     name="Sweeps Coins",
                     code="SC",
+                    activate_selector="button.balance-switcher-button-fc",
                     selectors=[
-                        # Active state — count-up animation deepest span
-                        "button.balance-switcher-button-fc span.balance-switcher-button-number-count-up > span",
-                        # Inactive state — icon-responsive-phone deepest span
-                        "button.balance-switcher-button-fc span.balance-currency-icon-responsive-phone > span > span",
+                        "button.balance-switcher-button-fc.balance-switcher-button-can-grow span.balance-switcher-button-number-placeholder",
                     ],
                 ),
                 Currency(
                     name="Gold Coins",
                     code="GC",
+                    activate_selector="button.balance-switcher-button-gc",
                     selectors=[
-                        "button.balance-switcher-button-gc span.balance-switcher-button-number-count-up > span",
-                        "button.balance-switcher-button-gc span.balance-currency-icon-responsive-phone > span > span",
+                        "button.balance-switcher-button-gc.balance-switcher-button-can-grow span.balance-switcher-button-number-placeholder",
                     ],
                 ),
             ],
@@ -150,7 +150,7 @@ def create_sportzino_config() -> CasinoConfig:
         ),
         claim_pattern="simple",
         requires_2fa=False,
-        # No compliance-vendor geo gate on Sportzino; default browser geo is fine.
+        # We are in a valid jurisdiction.
         geoip=False,
         # Turnstile is handled by our own ``wait_for_turnstile`` (active
         # auto-click solver in casino.py), not scrapling's. False here
@@ -158,15 +158,7 @@ def create_sportzino_config() -> CasinoConfig:
         # (500ms wait before the widget has mounted) and adds a noisy
         # ``No Cloudflare challenge found`` log line.
         solve_cloudflare=False,
-        # Use Chrome (Patchright stealth Chromium with ``real_chrome=True``
-        # below) instead of Camoufox. Sportzino's Turnstile escalates to a
-        # *managed* challenge (render=explicit, .login-turnstile-container)
-        # when it doesn't trust the fingerprint — Camoufox's Firefox-based
-        # signals trigger that escalation. Chrome's fingerprint passes
-        # Turnstile's invisible path on this site without interaction; if
-        # it ever does escalate, the active solver in ``wait_for_turnstile``
-        # clicks the checkbox. Camoufox would also work with the active
-        # solver — switch if you need geoip for any reason.
+        # camoufox and our solver work best here.
         browser_backend="camoufox",
         #real_chrome=True,
         page_wait_timeout=5000,

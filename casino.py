@@ -87,15 +87,45 @@ log = setup_logger()
 
 @dataclass
 class CasinoAccountState:
-    """Represents the current state of a Stake.us casino account."""
+    """Represents the current state of a casino account.
 
-    sweeps_coins: float = 0.0  # SC balance
-    gold_coins: float = 0.0  # GC balance
+    ``balances`` is keyed by the currency code declared in each
+    ``Currency`` config (``SC`` for Sweeps Coins, ``GC`` for Gold
+    Coins, ``FC`` for Fortune Wins's Fortune Coins, etc.). The
+    ``__str__`` form is the canonical line the runner's regex
+    parses, e.g.::
+
+        SC: 3.34, GC: 43562260.00, VIP: None
+
+    Currency codes are emitted in alphabetical order so a multi-
+    currency site (e.g. Fortune Wins with FC + GC) produces a
+    deterministic line shape.
+    """
+
+    balances: Dict[str, float] = field(default_factory=dict)
     vip_level: str = "None"  # VIP level (Bronze, Silver, Gold, Platinum, Diamond, etc.)
     vip_progress: Optional[float] = None  # Progress to next VIP level (0.0-1.0)
 
+    @property
+    def sweeps_coins(self) -> float:
+        """Back-compat shortcut for ``balances['SC']``."""
+        return self.balances.get("SC", 0.0)
+
+    @property
+    def gold_coins(self) -> float:
+        """Back-compat shortcut for ``balances['GC']``."""
+        return self.balances.get("GC", 0.0)
+
     def __str__(self) -> str:
-        return f"SC: {self.sweeps_coins:.2f}, GC: {self.gold_coins:.2f}, VIP: {self.vip_level}"
+        balance_pairs = ", ".join(
+            f"{code}: {value:.2f}" for code, value in sorted(self.balances.items())
+        )
+        # Empty-balances case drops the leading ``<pairs>, `` segment
+        # entirely (no awkward trailing comma), e.g. ``VIP: None``.
+        # The runner's ``_RX_ACCOUNT_LINE`` makes that segment
+        # optional and parses both shapes.
+        prefix = f"{balance_pairs}, " if balance_pairs else ""
+        return f"{prefix}VIP: {self.vip_level}"
 
 
 class Currency:
@@ -124,10 +154,27 @@ class CurrencyDisplayConfig:
         currencies: List[Currency],
         currency_toggle_dropdown_selector: Optional[str] = None,
         currency_toggle_switch_selector: Optional[str] = None,
+        read_settle_ms: int = 0,
     ):
+        """
+        Args:
+            currencies: Per-currency selector / activator configs.
+            currency_toggle_dropdown_selector: Optional dropdown to open
+                before reading balances (Stake.us-style wallet popover).
+            currency_toggle_switch_selector: Optional shared toggle to
+                cycle between currencies after each read.
+            read_settle_ms: Extra wait after the union hydration check
+                succeeds and before parsing values, to let count-up
+                animations finish. Zula renders a JS-driven count-up on
+                each lobby load that animates from a cached / starting
+                value up to the API's current balance — without this
+                wait we read mid-animation and get values that are a
+                consistent fraction of the real total.
+        """
         self.currencies = currencies
         self.currency_toggle_dropdown_selector = currency_toggle_dropdown_selector
         self.currency_toggle_switch_selector = currency_toggle_switch_selector
+        self.read_settle_ms = read_settle_ms
 
 
 close_selectors = [
@@ -169,9 +216,10 @@ def make_get_casino_account_state(
             )
 
         # Hydration wait — same shape as simple_claim's union wait. Post-
-        # OAuth lobby hydration can take 5-15s as React subscribes to
-        # balance state. Wait for ``attached`` rather than ``visible``:
-        # count-up animation containers are sometimes styled with
+        # OAuth lobby hydration can take 5-25s as React subscribes to
+        # balance state (SpinQuest is the slowest of the working set).
+        # Wait for ``attached`` rather than ``visible``: count-up
+        # animation containers are sometimes styled with
         # ``visibility:hidden`` while their inner spans render the
         # digits, and Playwright's ``visible`` check returns False on
         # the parent. ``text_content()`` works on hidden elements
@@ -182,20 +230,76 @@ def make_get_casino_account_state(
         if union_selectors:
             try:
                 page.locator(", ".join(union_selectors)).first.wait_for(
-                    state="attached", timeout=15000
+                    state="attached", timeout=30000
                 )
             except (AssertionError,) + BrowserError:
                 log.warning(
-                    "No currency selectors attached after 15s; balance read may be 0"
+                    "No currency selectors attached after 30s; balance read may be 0"
                 )
 
-        sweeps_coins = 0.0
-        gold_coins = 0.0
+        # Site-specific settle wait — let JS-driven count-up animations
+        # finish before we read the value. Zula's lobby plays a count-up
+        # from a starting/cached value up to the API balance; without
+        # this wait we capture an intermediate value (consistently
+        # ~30% of the final number on Camoufox).
+        if currency_display_config.read_settle_ms:
+            page.wait_for_timeout(currency_display_config.read_settle_ms)
+
+        balances: Dict[str, float] = {}
         vip_level = "None"
         vip_progress = None
 
+        # If any currency has its own ``activate_selector``, this site
+        # uses the inline-toggle pattern (Sportzino: clicking the
+        # inactive currency's own button activates it). In that case
+        # we drive activation per-currency below and skip the shared
+        # ``currency_toggle_switch_selector`` post-iteration click,
+        # which would either be redundant or close the wrong thing.
+        use_inline_activators = any(
+            c.activate_selector for c in currency_display_config.currencies
+        )
+
         # Try to parse Stake Cash balance
         for currency in currency_display_config.currencies:
+            # Per-currency activator: click to make this currency
+            # the active one before reading. Two patterns supported:
+            #
+            #   * **Idempotent activate** (Sportzino, FortuneWins):
+            #     two side-by-side currency buttons; clicking the
+            #     already-active button is a no-op. ``is_active_selector``
+            #     can be left None and the click runs unconditionally.
+            #   * **Toggle activate** (SpinQuest): one button that
+            #     toggles between currencies on each click. Set
+            #     ``is_active_selector`` to a marker that's only
+            #     present when this currency is active so we skip
+            #     the click when already in the right state.
+            if currency.activate_selector:
+                already_active = False
+                if currency.is_active_selector:
+                    try:
+                        if page.locator(currency.is_active_selector).count() > 0:
+                            already_active = True
+                    except BrowserError:
+                        pass
+
+                if not already_active:
+                    try:
+                        page.click(
+                            currency.activate_selector,
+                            delay=gaussian_random_delay(),
+                            timeout=5000,
+                        )
+                        # Count-up animation settles within ~500ms; give
+                        # 800ms margin so the value span has the final
+                        # number when we read it.
+                        page.wait_for_timeout(800)
+                    except BrowserError as e:
+                        log.debug(
+                            "activate_selector %s click failed: %s",
+                            currency.activate_selector,
+                            e,
+                        )
+
             for selector in currency.selectors:
                 try:
                     element_selector = page.locator(selector)
@@ -211,7 +315,14 @@ def make_get_casino_account_state(
                             .replace(",", "")
                             .strip()
                         )
-                        log.debug(
+                        # Logged at INFO so the runner's stderr_tail
+                        # captures the actual raw text even on success.
+                        # Useful for diagnosing wrong-value parses where
+                        # the selector matches but the rendered content
+                        # differs from what the user sees in their own
+                        # browser (e.g. Camoufox vs Chrome rendering, or
+                        # cached pre-API balances).
+                        log.info(
                             "Currency %s selector %s: raw=%r cleaned=%r",
                             currency.code,
                             selector,
@@ -221,17 +332,17 @@ def make_get_casino_account_state(
                         try:
                             n = float(cleaned)
                             log.info(f"Found {currency.name} balance: {n}")
-                            if currency.code == "SC":
-                                sweeps_coins = n
-                            elif currency.code == "GC":
-                                gold_coins = n
+                            balances[currency.code] = n
                             break
                         except ValueError:
                             continue
                 except Exception as e:
                     log.debug(f"Selector {selector} failed for {currency.name}: {e}")
                     continue
-            if currency_display_config.currency_toggle_switch_selector:
+            if (
+                currency_display_config.currency_toggle_switch_selector
+                and not use_inline_activators
+            ):
                 # Switch to next currency in dropdown
                 page.click(
                     currency_display_config.currency_toggle_switch_selector,
@@ -246,8 +357,7 @@ def make_get_casino_account_state(
             )
 
         return CasinoAccountState(
-            sweeps_coins=sweeps_coins,
-            gold_coins=gold_coins,
+            balances=balances,
             vip_level=vip_level,
             vip_progress=vip_progress,
         )
@@ -264,10 +374,10 @@ def make_dismiss_popup(
 ) -> Callable[[Page], None]:
     """Build a callback that dismisses a single post-login popup.
 
-    Wired into ``LoginConfig.post_login_callback``. Sites in the
-    Stake-family routinely auto-pop a daily-bonus / welcome / promo
-    dialog right after login whose backdrop blocks subsequent header
-    clicks; this is the standard way to clear it.
+    Wired into ``LoginConfig.post_login_callback``. Sites on the
+    SLNGApp OAuth platform routinely auto-pop a daily-bonus / welcome
+    / promo dialog right after login whose backdrop blocks subsequent
+    header clicks; this is the standard way to clear it.
 
     Strategy (first that succeeds wins):
 
@@ -692,7 +802,7 @@ def make_login_action_factory(
             page.fill(username_selector, username)
             page.fill(password_selector, password)
 
-            # The submit button on Stake-family /login pages is gated
+            # The submit button on SLNGApp-platform /login pages is gated
             # by Cloudflare Turnstile — it stays HTML-disabled until
             # ``cf-turnstile-response`` has a populated token. Without
             # this wait, ``page.click`` finds the locator but spins for
@@ -1866,8 +1976,15 @@ class CasinoConfig:
     claim_config: MTBClaimConfig | GenericClaimConfig | SimpleClaimConfig
     claim_pattern: Literal["mtb", "generic", "simple"] = "mtb"
 
-    # Optional: Custom balance parser
-    custom_balance_parser: Optional[Callable[[Page], Dict[str, Optional[float]]]] = None
+    # Optional: Custom balance parser. Use this for sites whose
+    # currency-toggle pattern doesn't fit the default
+    # ``make_get_casino_account_state`` factory — e.g. SpinQuest,
+    # which has a toggle button + react-toastify confirmation
+    # ("You've switched to SweepsCoins/GoldCoins") rather than
+    # a per-currency activator. Should return a populated
+    # ``CasinoAccountState`` so the canonical "Account State: ..."
+    # log line shape stays consistent for the runner's regex.
+    custom_balance_parser: Optional[Callable[[Page], CasinoAccountState]] = None
 
     # Optional: Additional page actions to perform after standard flow
     additional_actions: Optional[List[Callable[[Page], None]]] = field(
