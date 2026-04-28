@@ -120,9 +120,10 @@ class CasinoAccountState:
         balance_pairs = ", ".join(
             f"{code}: {value:.2f}" for code, value in sorted(self.balances.items())
         )
-        # Empty-balances case still emits ``VIP: ...`` so the
-        # runner regex's ``Account State:`` anchor matches even
-        # when nothing was parsed.
+        # Empty-balances case drops the leading ``<pairs>, `` segment
+        # entirely (no awkward trailing comma), e.g. ``VIP: None``.
+        # The runner's ``_RX_ACCOUNT_LINE`` makes that segment
+        # optional and parses both shapes.
         prefix = f"{balance_pairs}, " if balance_pairs else ""
         return f"{prefix}VIP: {self.vip_level}"
 

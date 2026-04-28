@@ -70,16 +70,20 @@ DEFAULT_TIMEOUT_S = 300  # 5 min per site
 #                                                     this likely means the daily bonus has
 #                                                     already been claimed.",
 #                                                    "Error clicking button for daily: ..."
-# Account State line shape (canonical, emitted by ``CasinoAccountState.__str__``):
+# Account State line shapes (emitted by ``CasinoAccountState.__str__``):
 #
 #     Account State: SC: 3.34, GC: 43562260.00, VIP: None
 #     Account State: FC: 3.37, GC: 832889071.00, VIP: None     # FortuneWins
+#     Account State: VIP: None                                 # empty balances
 #
-# We parse the segment between ``Account State:`` and ``, VIP:`` and
-# extract every ``<CODE>: <number>`` pair into a balances dict —
-# generic over currency types so adding a new currency code (FC,
-# anything new in the future) requires no runner change.
-_RX_ACCOUNT_LINE = re.compile(r"Account State: (.*?), VIP: (\S+)")
+# The balance segment is optional — when a script crashes before
+# any currency parses, the line still gets emitted with just the
+# VIP suffix and we want to keep parsing it (empty balances dict +
+# whatever outcome class fell out). We extract every
+# ``<CODE>: <number>`` pair from the optional segment into a
+# balances dict, generic over currency types so adding a new code
+# (FC, anything in the future) requires no runner change.
+_RX_ACCOUNT_LINE = re.compile(r"Account State: (?:(.*?), )?VIP: (\S+)")
 _RX_ACCOUNT_PAIR = re.compile(r"\b([A-Z]{2,4}): ([\d.]+)\b")
 _RX_CLAIMED = re.compile(
     r"daily bonus claimed\."                # MTB canonical line ("Daily bonus claimed.")
@@ -175,7 +179,9 @@ def parse_outcome(stdout: str) -> tuple[Dict[str, float], str]:
     """
     balances: Dict[str, float] = {}
     line_match = _RX_ACCOUNT_LINE.search(stdout)
-    if line_match:
+    # group(1) is the optional balance segment — None when the line
+    # had no balances (e.g. ``Account State: VIP: None``).
+    if line_match and line_match.group(1):
         for code, raw_value in _RX_ACCOUNT_PAIR.findall(line_match.group(1)):
             try:
                 balances[code] = float(raw_value)

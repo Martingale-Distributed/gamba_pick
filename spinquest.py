@@ -116,6 +116,11 @@ def read_spinquest_balances(page: Page) -> CasinoAccountState:
         )
         return CasinoAccountState(balances=balances)
 
+    # Track successful toggles so the restore step at the end can
+    # leave the UI in its initial state regardless of where the
+    # loop bailed out — an unconditional final click would flip
+    # past the start when no toggle ever succeeded.
+    toggles_done = 0
     for i in range(2):
         if i > 0:
             try:
@@ -124,6 +129,7 @@ def read_spinquest_balances(page: Page) -> CasinoAccountState:
                     delay=gaussian_random_delay(),
                     timeout=5000,
                 )
+                toggles_done += 1
                 # Brief wait for the value display to update after
                 # the toggle.
                 page.wait_for_timeout(500)
@@ -164,15 +170,14 @@ def read_spinquest_balances(page: Page) -> CasinoAccountState:
         balances[code] = n
         log.info("Found %s balance: %s", code, n)
 
-    # Toggle once more to restore initial state — we toggled twice
-    # if both reads succeeded (already restored), once if only one
-    # iteration ran. Net: we want an even number of toggles total.
-    # The loop above does N iterations with N-1 toggles, so we
-    # need one final toggle to balance.
-    try:
-        page.click(amounts_btn_selector, delay=gaussian_random_delay(), timeout=5000)
-    except BrowserError:
-        pass
+    # Restore initial UI state: the toggle is binary, so if we did
+    # an odd number of successful toggles we need one more to get
+    # back; an even count (including zero) is already balanced.
+    if toggles_done % 2 == 1:
+        try:
+            page.click(amounts_btn_selector, delay=gaussian_random_delay(), timeout=5000)
+        except BrowserError:
+            pass
 
     return CasinoAccountState(balances=balances)
 
