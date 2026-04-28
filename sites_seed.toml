@@ -1,0 +1,309 @@
+# Seed registry of sweeps-casino sites known to gamba_pick.
+#
+# Lifted from the casinos_master.yaml in the prior casino_automation
+# project (cycle-five/casino_automation). Pure data — names, URLs,
+# affiliate links, and a status flag indicating where each site sits
+# in the implementation pipeline. The runner consults this list to
+# decide what to attempt; configs / modules for working sites live in
+# their own .py files at the top level of this repo.
+#
+# status:
+#   working  — Python module exists in this repo and runs end-to-end
+#              (login, balance read, daily-claim attempt, clean exit).
+#   juicy    — priority site to add next. All four current ``juicy``
+#              entries are Stake-family / Mediumrare-derived, sharing
+#              the OAuth-PKCE + Cloudflare-Turnstile + balance-switcher
+#              shape the framework already handles.
+#   surveyed — in the master list, no module yet, no priority assigned.
+#   unknown  — site exists but its claim flow hasn't been mapped (the
+#              old project carried these as ``manual_input`` stubs).
+#
+# auth (only meaningful when status="working"):
+#   oauth — site uses Google OAuth; runner passes --google-oauth.
+#   form  — site uses email+password; runner relies on
+#           <SITEID>_USERNAME / <SITEID>_PASSWORD env vars (read by
+#           ``casino.get_credentials`` via the URL-derived prefix).
+#   default is "oauth".
+#
+# affiliate_link: kept for reference; affiliate-coded URLs are tied
+# to the operator's account in the old project. Not used by the
+# runner today.
+#
+# timeout_s (optional): per-site subprocess timeout override.
+# Defaults to the runner's ``--timeout-per-site`` value (300s).
+# Set tighter for sites with predictable teardown hangs (e.g. zula
+# via the scrapling/Camoufox redirect-response interaction): pick
+# a value just above typical work duration so SIGKILL fires shortly
+# after the DONE marker rather than waiting out the global default.
+
+[[site]]
+id = "spinquest"
+name = "SpinQuest"
+url = "https://spinquest.com"
+status = "working"
+auth = "form"
+module = "spinquest"
+
+[[site]]
+id = "stake_us"
+name = "Stake.us"
+url = "https://stake.us"
+affiliate_link = "https://stake.us/?c=vXzVKL4j"
+status = "working"
+auth = "form"
+module = "stake_us"
+
+[[site]]
+id = "zula_casino"
+name = "Zula Casino"
+url = "https://zulacasino.com"
+affiliate_link = "https://www.zulacasino.com/signup/b6cf5ee8-3374-4f86-9ee0-8d42e1a9e914"
+status = "working"
+auth = "oauth"
+module = "zulacasino"
+# Zula's teardown predictably hangs in scrapling's _process_response_history
+# (Camoufox + redirect chain). Work itself completes by ~30s; tighten the
+# timeout so the runner SIGKILLs the stuck cleanup loop quickly instead
+# of waiting out the 300s default. Remove once scrapling is vendor-patched.
+timeout_s = 90
+
+[[site]]
+id = "sportzino"
+name = "Sportzino"
+url = "https://sportzino.com"
+affiliate_link = "https://sportzino.com/signup/58fa86ad-5f1c-49cc-9d13-26d1aa803f49"
+status = "working"
+auth = "oauth"
+module = "sportzino"
+
+[[site]]
+id = "fortune_wins"
+name = "Fortune Wins Casino"
+# Renamed from fortunecoins.com mid-2026 (was "Fortune Coins" in the
+# old project's master list).
+url = "https://fortunewins.com"
+affiliate_link = "https://www.fortunecoins.com/signup/adf122b4-d830-4479-ba4b-6ebee4d51f75"
+status = "working"
+auth = "form"
+module = "fortunewins"
+
+[[site]]
+id = "lonestar_casino"
+name = "LoneStar Casino"
+url = "https://www.lonestarcasino.com"
+affiliate_link = "https://lonestarcasino.com/refer/806835"
+status = "juicy"
+
+[[site]]
+id = "real_prize"
+name = "Real Prize Casino"
+url = "https://realprize.com"
+affiliate_link = "https://realprize.com/"
+status = "juicy"
+
+[[site]]
+id = "yay_casino"
+name = "YayCasino"
+url = "https://yaycasino.com"
+affiliate_link = "https://www.yaycasino.com/signup/74ffb2ba-4661-49e6-928a-eabf5ce39d8c"
+status = "juicy"
+
+[[site]]
+id = "yay_casino_us"
+name = "YayCasino US"
+url = "https://yaycasino.us"
+affiliate_link = "https://www.yaycasino.us/signup/9843212a-3b49-48fa-938b-483bb3ceb30f"
+status = "surveyed"
+
+[[site]]
+id = "chumba_casino"
+name = "Chumba Casino"
+url = "https://lobby.chumbacasino.com"
+status = "surveyed"
+
+[[site]]
+id = "crown_coins"
+name = "Crown Coins Casino"
+url = "https://crowncoinscasino.com"
+affiliate_link = "https://crowncoinscasino.com/?utm_campaign=ff574d0a-b376-4f0c-add4-c5fcb23b816e&utm_source=friends"
+status = "surveyed"
+
+[[site]]
+id = "goldtreasure_casino"
+name = "Gold Treasure Casino"
+url = "https://goldtreasurecasino.com"
+affiliate_link = "https://goldtreasurecasino.com?referrer=2kHIs85r"
+status = "surveyed"
+
+[[site]]
+id = "hellomillions"
+name = "HelloMillions"
+url = "https://www.hellomillions.com"
+affiliate_link = "https://www.hellomillions.com/lp/raf?r=7cfef6f7%2F1036172505"
+status = "surveyed"
+
+[[site]]
+id = "high5_casino"
+name = "High 5 Casino"
+url = "https://high5casino.com"
+affiliate_link = "https://high5casino.com/gc?adId=INV001%3ALothrop"
+status = "surveyed"
+
+[[site]]
+id = "jackpota"
+name = "Jackpota Casino"
+url = "https://www.jackpota.com"
+affiliate_link = "https://www.jackpota.com/?r=30752758"
+status = "surveyed"
+
+[[site]]
+id = "luckyhands"
+name = "Lucky Hands Casino"
+url = "https://www.luckyhands.com"
+affiliate_link = "https://luckyhands.com/sign-up?code=dbb35a6c-7676-47a0-b68e-00040a10f4b7"
+status = "surveyed"
+
+[[site]]
+id = "mcluck_casino"
+name = "McLuck Casino"
+url = "https://www.mcluck.com"
+affiliate_link = "https://www.mcluck.com/lp/raf?r=1cb407a0%2F1058144370"
+status = "surveyed"
+
+[[site]]
+id = "megabonanza"
+name = "Megabonanza Casino"
+url = "https://www.megabonanza.com"
+affiliate_link = "https://www.megabonanza.com/?r=26058576"
+status = "surveyed"
+
+[[site]]
+id = "modo"
+name = "Modo US"
+url = "https://modo.us"
+affiliate_link = "https://modo.us?referralCode=84ARNE"
+status = "surveyed"
+
+[[site]]
+id = "playfame"
+name = "PlayFame"
+url = "https://playfame.com"
+affiliate_link = "https://www.playfame.com/lp/raf?r=1210523635"
+status = "surveyed"
+
+[[site]]
+id = "pulsz"
+name = "Pulsz Casino"
+url = "https://www.pulsz.com"
+affiliate_link = "https://www.pulsz.com/?invited_by=mhmmwz"
+status = "surveyed"
+
+[[site]]
+id = "pulszbingo"
+name = "Pulsz Bingo Casino"
+url = "https://www.pulszbingo.com"
+affiliate_link = "https://www.pulszbingo.com/?invited_by=aubxn2"
+status = "surveyed"
+
+[[site]]
+id = "rolling_riches"
+name = "Rolling Riches Casino"
+url = "https://www.rollingriches.com"
+affiliate_link = "https://www.rollingriches.com/lobby"
+status = "surveyed"
+
+[[site]]
+id = "spinblitz"
+name = "SpinBlitz"
+url = "https://spinblitz.com"
+affiliate_link = "https://www.spinblitz.com/lp/raf?r=affb8ca4%2F1205784127"
+status = "surveyed"
+
+[[site]]
+id = "wow_vegas"
+name = "WOW Vegas"
+url = "https://www.wowvegas.com"
+affiliate_link = "https://www.wowvegas.com/?raf=4924337"
+status = "surveyed"
+
+[[site]]
+id = "luckyland_slots"
+name = "LuckyLand Slots"
+url = "https://play.luckylandslots.com/"
+status = "surveyed"
+
+[[site]]
+id = "global_poker"
+name = "Global Poker"
+url = "https://play.globalpoker.com"
+affiliate_link = "https://www.globalpoker.com/?referralCode=1234567890"
+status = "surveyed"
+
+[[site]]
+id = "legendz_casino"
+name = "Legendz Casino"
+url = "https://www.legendz.com"
+affiliate_link = "https://www.legendz.com/?referred_by_id=299147"
+status = "surveyed"
+
+[[site]]
+id = "spinsaga_casino"
+name = "SpinSaga Casino"
+url = "https://play.spinsagacasino.com/"
+affiliate_link = "https://play.spinsagacasino.com/?ref=35499&campaign=referFriend"
+status = "surveyed"
+
+[[site]]
+id = "sixty6"
+name = "Sixty6 Casino"
+url = "https://sixty6.com"
+affiliate_link = "https://sixty6.com/?ref=F8E67840928D5F30&modal=register"
+status = "surveyed"
+
+[[site]]
+id = "themoneyfactory"
+name = "The Money Factory"
+url = "https://www.themoneyfactory.com"
+affiliate_link = "https://www.themoneyfactory.com/referral?referralcode=76d1de47-c9ec-497a-bc91-df00b45c4b2c"
+status = "surveyed"
+
+[[site]]
+id = "clubspoker"
+name = "Clubs Poker"
+url = "https://play.clubspoker.com"
+affiliate_link = "https://play.clubs.poker/?referralCode=191424"
+status = "surveyed"
+
+[[site]]
+id = "myprize"
+name = "MyPrize"
+url = "https://www.myprize.us"
+affiliate_link = "https://myprize.us/invite/lothrop"
+status = "surveyed"
+
+[[site]]
+id = "taofortune"
+name = "Tao Fortune"
+url = "https://taofortune.com"
+affiliate_link = "https://taofortune.com/?invited_by=61EXVI"
+status = "surveyed"
+
+[[site]]
+id = "spinfinite"
+name = "Spinfinite Casino"
+url = "https://www.spinfinite.com"
+status = "surveyed"
+
+[[site]]
+id = "casino_click"
+name = "Casino Click"
+url = "https://casino.click"
+affiliate_link = "https://casino.click"
+status = "unknown"
+
+[[site]]
+id = "baba_casino"
+name = "Baba Casino"
+url = "https://play.babacasino.com"
+affiliate_link = "https://play.babacasino.com/#/?referral_id=5c443677a88f7d676d76fa09b9fd47c5&inv_referral=true&fb_source=invite"
+status = "unknown"

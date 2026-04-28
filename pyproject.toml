@@ -1,30 +1,26 @@
-#[build-system]
-#requires = ["setuptools>=61.0", "wheel"]
-#build-backend = "setuptools.build_meta"
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "gamba_pick"
-version = "0.0.1"
+version = "0.1.0"
 description = "Auto Gamba for Fun and Profit"
 readme = { file = "README.md", content-type = "text/markdown" }
-license = { file = "LICENSE" }
+license = "GPL-3.0-or-later"
 authors = [{ name = "Cycle Five", email = "cycle.five@proton.me" }]
 maintainers = [{ name = "Cycle Five", email = "cycle.five@proton.me" }]
 keywords = [
-    "web-scraping",
-    "scraping",
+    "gambling",
+    "casino",
     "automation",
     "browser-automation",
-    "data-extraction",
-    "html-parsing",
-    "undetectable",
+    "gamba",
+    "betting",
     "playwright",
-    "selenium-alternative",
-    "web-crawler",
     "browser",
-    "crawling",
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 classifiers = [
     "Operating System :: OS Independent",
     "Development Status :: 4 - Beta",
@@ -32,13 +28,11 @@ classifiers = [
     # "Development Status :: 6 - Mature",
     # "Development Status :: 7 - Inactive",
     "Intended Audience :: Developers",
-    "Intended Audience :: Information Technology",
+    "Intended Audience :: End Users/Desktop",
     "Natural Language :: English",
     "Topic :: Internet :: WWW/HTTP",
     "Topic :: Internet :: WWW/HTTP :: Browsers",
-    "Topic :: Text Processing :: Markup",
-    "Topic :: Text Processing :: Markup :: HTML",
-    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Games/Entertainment",
     "Topic :: Software Development :: Libraries",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Programming Language :: Python :: 3",
@@ -52,20 +46,19 @@ classifiers = [
 ]
 dependencies = [
     "pyotp>=2.9.0",
-    "click>=8.3.0",
+    "click>=8.2.1",
     "curl_cffi>=0.13.0",
-    "playwright>=1.55.0",
-    "patchright>=1.55.2",
+    "playwright>=1.56.0",
+    "patchright>=1.56.0",
     "camoufox>=0.4.11",
-    "geoip2>=5.1.0",
+    "geoip2>=4.8.1",
     "msgspec>=0.19.0",
-    "scrapling @ file:///home/lothrop/src/Scrapling.worktrees/dev2",
-
+    "scrapling @ file:///home/lothrop/src/Scrapling",
 ]
 
 [project.optional-dependencies]
 shell = [
-    "IPython>=8.37",      # The last version that supports Python 3.10
+    "IPython>=8.3.0",     # The last version that supports Python 3.10
     "markdownify>=1.2.0",
 ]
 
@@ -76,10 +69,10 @@ Repository = "https://github.com/Martingale-Distributed/gamba_pick"
 "Bug Tracker" = "https://github.com/Martingale-Distributed/gamba_pick/issues"
 
 [project.scripts]
-scrapling = "gamba_pick.cli:main"
+gamba-pick = "gamba_pick.cli:main"
 
 [tool.setuptools]
-zip-safe = false
+zip-safe = true
 include-package-data = true
 
 [tool.setuptools.packages.find]

@@ -16,9 +16,6 @@ __pycache__/
 *.db
 *.db-*
 
-# ai
-.claude/
-
 # installation package
 *.egg-info/
 dist/
@@ -110,3 +107,11 @@ logged_in_data/
 picks_data/
 picks.env
 .vscode/
+.omc/
+bet_history/
+profiles/
+cloudflare_debug.png
+cloudflare_debug.html
+
+# runner.py output — append-only run history
+claim_history.jsonl

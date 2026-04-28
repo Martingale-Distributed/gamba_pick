@@ -1,23 +1,40 @@
+import contextlib
 import os
+import re
 import pyotp
 import random
 import functools
 import time
+import csv
 
 from argparse import ArgumentParser
+from urllib.parse import urlparse
 from dataclasses import dataclass
 from functools import wraps
 from typing import Callable, TypeVar, Any, Dict, List, Optional
 from pathlib import Path
-from playwright.sync_api import expect, Page, ElementHandle, Locator, TimeoutError as PlaywrightTimeoutError
+from playwright.sync_api import (
+    expect,
+    Page,
+    ElementHandle,
+    Locator,
+    TimeoutError as PlaywrightTimeoutError,
+)
 from scrapling.engines.toolbelt.custom import Response, Selector
 from scrapling.fetchers import StealthySession
 from scrapling.cli import log
 from datetime import datetime
 
-from casino import CLICK_TIMEOUT_MS, MAX_CLICK_RETRIES, HANG_DETECTION_SECONDS, MAX_KENO_ITERATIONS
+from casino import (
+    CLICK_TIMEOUT_MS,
+    MAX_CLICK_RETRIES,
+    HANG_DETECTION_SECONDS,
+    MAX_KENO_ITERATIONS,
+)
 from casino import (
     get_credentials,
+    google_oauth_login_page_make,
+    load_env_file,
     wait_for_load_all_safe,
     wait_for_clickable,
     safe_click,
@@ -58,6 +75,101 @@ class AccountState:
             "free_spins": self.free_spins,
             "time_remaining": self.time_remaining,
         }
+
+
+@dataclass
+class BetHistoryEntry:
+    """Represents a single bet history entry from game_history.php."""
+    time: str          # e.g. "2024-01-15 14:30:22"
+    game: str          # e.g. "Keno", "Dice"
+    bet: float         # wager amount
+    multiplier: float  # e.g. 0.00, 2.50
+    profit: float      # win/loss amount
+
+
+class GameConfig:
+    """Configuration for a specific game on the pick site."""
+
+    def __init__(
+        self,
+        name: str,
+        game_url: str,
+        play_action: Callable[[Page], Any],
+        min_bet: float = 0.0001,
+    ):
+        self.name = name
+        self.game_url = game_url
+        self.min_bet = min_bet
+        self.play_action = play_action
+
+    def __str__(self):
+        return f"GameConfig(name={self.name}, game_url={self.game_url})"
+
+    def __repr__(self):
+        return self.__str__()
+
+
+GAME_CONFIGS_BY_NAME_AND_SITE: Dict[str, "GameConfig"] = {
+    "Litepick Keno": GameConfig(
+        name="Litepick Keno",
+        game_url="https://litepick.io/keno.php",
+        min_bet=0.000001,
+        play_action=lambda page: play_keno_func(page),
+    ),
+    "Tronpick Keno": GameConfig(
+        name="Tronpick Keno",
+        game_url="https://tronpick.io/keno.php",
+        min_bet=0.00001,
+        play_action=lambda page: play_keno_func(page),
+    ),
+    "Polpick Keno": GameConfig(
+        name="Polpick Keno",
+        game_url="https://polpick.io/keno.php",
+        min_bet=0.00001,
+        play_action=lambda page: play_keno_func(page),
+    ),
+    "Bnbpick Keno": GameConfig(
+        name="Bnbpick Keno",
+        game_url="https://bnbpick.io/keno.php",
+        min_bet=0.000001,
+        play_action=lambda page: play_keno_func(page),
+    ),
+    "Dogepick Keno": GameConfig(
+        name="Dogepick Keno",
+        game_url="https://dogepick.io/keno.php",
+        min_bet=0.001,
+        play_action=lambda page: play_keno_func(page),
+    ),
+    "Solpick Keno": GameConfig(
+        name="Solpick Keno",
+        game_url="https://solpick.io/keno.php",
+        min_bet=0.000001,
+        play_action=lambda page: play_keno_func(page),
+    ),
+    "Suipick Keno": GameConfig(
+        name="Suipick Keno",
+        game_url="https://suipick.io/keno.php",
+        min_bet=0.00001,
+        play_action=lambda page: play_keno_func(page),
+    ),
+    "Tonpick Keno": GameConfig(
+        name="Tonpick Keno",
+        game_url="https://tonpick.game/keno.php",
+        min_bet=0.00001,
+        play_action=lambda page: play_keno_func(page),
+    ),
+}
+
+
+def url_to_game_config(url: str) -> Optional["GameConfig"]:
+    """Create a GameConfig from a game URL."""
+    parsed_url = urlparse(url)
+    netloc = parsed_url.netloc
+
+    prefix = netloc.split(".")[0]
+    directory = parsed_url.path.strip("/").split("/")[0]
+    name = f"{prefix.capitalize()} {directory.capitalize()}"
+    return GAME_CONFIGS_BY_NAME_AND_SITE.get(name)
 
 
 class Pick:
@@ -136,7 +248,9 @@ class Pick:
             free_spins = account_state.free_spins
             cooldown_timer = account_state.time_remaining
         elif balance is None or wagered is None or target is None:
-            raise ValueError("Either account_state or all individual parameters must be provided")
+            raise ValueError(
+                "Either account_state or all individual parameters must be provided"
+            )
 
         # Default values for optional parameters
         if remaining_claims is None:
@@ -146,7 +260,14 @@ class Pick:
 
         if self.last_update is not None:
             self.history.append(
-                (self.last_update, self.balance, self.wagered, self.target, self.remaining_claims, self.free_spins)
+                (
+                    self.last_update,
+                    self.balance,
+                    self.wagered,
+                    self.target,
+                    self.remaining_claims,
+                    self.free_spins,
+                )
             )
 
         self.balance = balance
@@ -160,7 +281,16 @@ class Pick:
     def get_history(self) -> list[tuple[datetime, float, float, float, int, int]]:
         return (
             self.history
-            + [(self.last_update, self.balance, self.wagered, self.target, self.remaining_claims, self.free_spins)]
+            + [
+                (
+                    self.last_update,
+                    self.balance,
+                    self.wagered,
+                    self.target,
+                    self.remaining_claims,
+                    self.free_spins,
+                )
+            ]
             if self.last_update
             else self.history
         )
@@ -201,7 +331,9 @@ def get_balance(page: Page) -> float:
     balance_selector = "body > header > nav > div.navbar-header > div > div > span"
     balance = 0.0
 
-    balance_element: Optional[ElementHandle] = page.query_selector(selector=balance_selector)
+    balance_element: Optional[ElementHandle] = page.query_selector(
+        selector=balance_selector
+    )
 
     if balance_element:
         balance_text = balance_element.text_content()
@@ -213,19 +345,24 @@ def get_balance(page: Page) -> float:
     return balance
 
 
-def bet_and_start_auto(page: Page, stop: bool = False) -> Optional[float]:
+def bet_and_start_auto(
+    page: Page, stop: bool = False, min_bet: float = 0.00000100
+) -> Optional[float]:
     """Stop any ongoing betting, rebet at 1/100 of balance, and start auto betting on the page.
 
     Args:
         page (Page): The Playwright page object.
         stop (bool, optional): Whether to stop existing autobet first. Defaults to False.
+        min_bet (float, optional): Minimum bet allowed for this game. Defaults to 0.00000100.
 
     Returns:
         Optional[float]: The wager amount if successful, None if any operation failed.
     """
     try:
         balance = get_balance(page)
-        wager_amount = max(0.00000100, balance / 100.0)  # Bet 1/100th of balance or 0.00000100, whichever is greater
+        wager_amount = max(
+            min_bet, balance / 100.0
+        )  # Bet 1/100th of balance or min_bet, whichever is greater
 
         # Stop existing autobet if requested
         if stop:
@@ -235,7 +372,11 @@ def bet_and_start_auto(page: Page, stop: bool = False) -> Optional[float]:
 
         # Fill in bet amount
         try:
-            page.fill("#bet_amount", str(format(wager_amount, ".8f")), timeout=CLICK_TIMEOUT_MS)
+            page.fill(
+                "#bet_amount",
+                str(format(wager_amount, ".8f")),
+                timeout=CLICK_TIMEOUT_MS,
+            )
         except Exception as e:
             log.error("Failed to fill bet amount: %s", e)
             return None
@@ -268,6 +409,21 @@ def bet_and_start_auto(page: Page, stop: bool = False) -> Optional[float]:
 def play_keno_func(page: Page) -> None:
     """Play keno game on pick sites with hang detection."""
 
+    # Get the game config from the current URL
+    current_url = page.url
+    game_config = url_to_game_config(current_url)
+
+    if game_config:
+        min_bet = game_config.min_bet
+        log.info("Using game config: %s with min_bet: %f", game_config.name, min_bet)
+    else:
+        min_bet = 0.00000100
+        log.warning(
+            "No game config found for URL: %s, using default min_bet: %f",
+            current_url,
+            min_bet,
+        )
+
     # generate 7 random picks between 1 and 40
     picks = random.sample(range(1, 41), 7)
     board_selector = "#keno_table > div.keno_gamecell > div.keno_gamecell_index"
@@ -282,8 +438,8 @@ def play_keno_func(page: Page) -> None:
             log.error("Failed to click keno pick %d: %s", pick, e)
             return
 
-    # Start autobet with timeout handling
-    wager_amount = bet_and_start_auto(page)
+    # Start autobet with timeout handling, using the game-specific min_bet
+    wager_amount = bet_and_start_auto(page, min_bet=min_bet)
     if wager_amount is None:
         log.error("Failed to start autobet, exiting keno game")
         return
@@ -299,7 +455,10 @@ def play_keno_func(page: Page) -> None:
 
         # Safety net: exit after maximum iterations
         if iteration_count > MAX_KENO_ITERATIONS:
-            log.warning("Reached maximum iterations (%d), exiting keno game", MAX_KENO_ITERATIONS)
+            log.warning(
+                "Reached maximum iterations (%d), exiting keno game",
+                MAX_KENO_ITERATIONS,
+            )
             break
 
         balance = get_balance(page)
@@ -321,10 +480,29 @@ def play_keno_func(page: Page) -> None:
                 )
                 break
 
-        # Check if we need to rebet due to balance change
-        if (balance < wager_amount * 50) or (balance > wager_amount * 150):
-            log.info("Rebetting due to balance change.")
-            new_wager = bet_and_start_auto(page, stop=True)
+        # Check if balance is too low to continue (below 20x the bet amount)
+        if balance < wager_amount * 20:
+            log.info(
+                "Balance too low (%f < %f), stopping keno game.",
+                balance,
+                wager_amount * 20,
+            )
+            # Try to stop autobet before exiting
+            try:
+                safe_click(page, "#stop_autobet", timeout=CLICK_TIMEOUT_MS)
+            except Exception as e:
+                log.warning("Could not stop autobet: %s", e)
+            break
+
+        # Check if balance grew significantly - rebet at new level (1% of balance)
+        # Only rebet if balance is more than 300x current wager
+        elif balance > wager_amount * 300:
+            log.info(
+                "Balance grew significantly (%f > %f), rebetting at higher amount.",
+                balance,
+                wager_amount * 300,
+            )
+            new_wager = bet_and_start_auto(page, stop=True, min_bet=min_bet)
             if new_wager is None:
                 log.error("Failed to rebet, exiting keno game")
                 break
@@ -333,9 +511,13 @@ def play_keno_func(page: Page) -> None:
             last_balance = balance
             last_balance_change_time = time.time()
 
-        # Check if balance is outside acceptable range (too low or too high)
-        elif (balance < wager_amount * 20) or (balance > wager_amount * 1000):
-            log.info("Balance outside acceptable range, stopping keno game.")
+        # Check if balance is extremely high - stop to prevent further risk
+        elif balance > wager_amount * 1000:
+            log.info(
+                "Balance extremely high (%f > %f), stopping keno game to secure profits.",
+                balance,
+                wager_amount * 1000,
+            )
             # Try to stop autobet before exiting
             try:
                 safe_click(page, "#stop_autobet", timeout=CLICK_TIMEOUT_MS)
@@ -388,14 +570,15 @@ def screenshot_action(func: Callable[[Page], T]) -> Callable[[Page], T]:
         enable_screenshots: bool = False
         enable_states: bool = True
 
-        # Get the function name
-        func_name = func.__name__
+        # Get the function name (be defensive: some call sites may accidentally
+        # pass non-callables like sentinel objects)
+        func_name = getattr(func, "__name__", func.__class__.__name__)
 
         # Extract currency from the closure variables
         currency = "UNK"
-        if func.__closure__:
+        if hasattr(func, "__closure__") and func.__closure__:
             # Map closure variable names to their values
-            closure_vars = func.__code__.co_freevars
+            closure_vars = func.__code__.co_freevars if hasattr(func, "__code__") else ()
             for i, var_name in enumerate(closure_vars):
                 if var_name == "currency":
                     currency = func.__closure__[i].cell_contents
@@ -419,6 +602,10 @@ def screenshot_action(func: Callable[[Page], T]) -> Callable[[Page], T]:
             log.info("Screenshots disabled, skipping before/after screenshots.")
 
         # Execute the original function
+        if not callable(func):
+            raise TypeError(
+                f"screenshot_action expected a callable, got {type(func)!r} ({func!r})"
+            )
         result = func(page)
 
         # Get the account state from the live page.
@@ -439,7 +626,9 @@ def screenshot_action(func: Callable[[Page], T]) -> Callable[[Page], T]:
     return wrapper
 
 
-def parse_flipclock(page: Page, flipclock_selector: str, flipclock_digits_selector: str) -> Optional[str]:
+def parse_flipclock(
+    page: Page, flipclock_selector: str, flipclock_digits_selector: str
+) -> Optional[str]:
     """Parse the flipclock countdown timer from the page.
 
     Args:
@@ -457,10 +646,19 @@ def parse_flipclock(page: Page, flipclock_selector: str, flipclock_digits_select
         expect(flipclock_locator).to_be_attached(timeout=3000)
         flipclock_element: ElementHandle = flipclock_locator.element_handle()
     except PlaywrightTimeoutError as e:
-        log.warning("Flipclock not found on page (faucet likely ready): %s", str(e)[:100])
+        log.warning(
+            "Flipclock not found on page (faucet likely ready): %s", str(e)[:100]
+        )
+        # Without ``flipclock_element`` the rest of this function would hit
+        # ``UnboundLocalError``. Faucet-ready is the expected case here, so
+        # we surface ``None`` (the documented "no time remaining" signal)
+        # rather than raising.
+        return None
 
     # Query the flipclock digits from the live DOM
-    active_digits_elements: List[ElementHandle] = flipclock_element.query_selector_all(flipclock_digits_selector)
+    active_digits_elements: List[ElementHandle] = flipclock_element.query_selector_all(
+        flipclock_digits_selector
+    )
 
     log.info("Found %d active digit elements from Page", len(active_digits_elements))
 
@@ -487,7 +685,9 @@ def parse_flipclock(page: Page, flipclock_selector: str, flipclock_digits_select
     return time_remaining
 
 
-def parse_account_state_page(page: Page, currency: str = "UNK") -> Optional[AccountState]:
+def parse_account_state_page(
+    page: Page, currency: str = "UNK"
+) -> Optional[AccountState]:
     """Parse the current account state from the faucet page.
 
     Extracts balance, wagering progress, remaining claims, free spins, and countdown timer
@@ -503,23 +703,57 @@ def parse_account_state_page(page: Page, currency: str = "UNK") -> Optional[Acco
     flipclock_selector: str = "#faucet_countdown_clock"
     flipclock_digits_selector: str = ".clock ul.flip"
     time_remaining: Optional[str] = None
-    balance_element: Optional[ElementHandle] = page.query_selector(selector="span[class=user_balance]")
-    balance_element_new: Optional[ElementHandle] = page.query_selector(selector=".drop_down_header_text")
-    wagered_element: Optional[ElementHandle] = page.query_selector(selector="b[id=total_wagered]")
-    target_element: Optional[ElementHandle] = page.query_selector(selector="b[id=wagering_target]")
-    remaining_claims_element: Optional[ElementHandle] = page.query_selector(selector="b[class=faucet_claims_remaining]")
-    free_spins_element: Optional[ElementHandle] = page.query_selector(selector="span[id=free_spins]")
+    balance_element: Optional[ElementHandle] = page.query_selector(
+        selector="span[class=user_balance]"
+    )
+    balance_element_new: Optional[ElementHandle] = page.query_selector(
+        selector=".drop_down_header_text"
+    )
+    wagered_element: Optional[ElementHandle] = page.query_selector(
+        selector="b[id=total_wagered]"
+    )
+    target_element: Optional[ElementHandle] = page.query_selector(
+        selector="b[id=wagering_target]"
+    )
+    remaining_claims_element: Optional[ElementHandle] = page.query_selector(
+        selector="b[class=faucet_claims_remaining]"
+    )
+    free_spins_element: Optional[ElementHandle] = page.query_selector(
+        selector="span[id=free_spins]"
+    )
+
+    # If none of the faucet-specific elements exist, we're not on a page that
+    # exposes account state (e.g. login.php or the post-login landing page).
+    # Returning a zero-filled AccountState here would overwrite real state in
+    # Pick.update() and poison history with bogus [0, 0, 0, 0, 0] entries.
+    if (
+        wagered_element is None
+        and target_element is None
+        and remaining_claims_element is None
+    ):
+        log.debug(
+            "[%s] No faucet state elements found on page %s; skipping state parse",
+            currency,
+            page.url,
+        )
+        return None
 
     flipclock_locator: Locator = page.locator(flipclock_selector)
 
     if flipclock_locator.count() > 0:
-        time_remaining = parse_flipclock(page, flipclock_selector, flipclock_digits_selector)
+        time_remaining = parse_flipclock(
+            page, flipclock_selector, flipclock_digits_selector
+        )
 
     balance_text = balance_element.text_content() if balance_element else None
-    balance_text_new = balance_element_new.text_content() if balance_element_new else None
+    balance_text_new = (
+        balance_element_new.text_content() if balance_element_new else None
+    )
     wagered_text = wagered_element.text_content() if wagered_element else "0.0"
     target_text = target_element.text_content() if target_element else "0.0"
-    remaining_claims_text = remaining_claims_element.text_content() if remaining_claims_element else "0"
+    remaining_claims_text = (
+        remaining_claims_element.text_content() if remaining_claims_element else "0"
+    )
     free_spins_text = free_spins_element.text_content() if free_spins_element else "0"
 
     # Parse numeric values
@@ -527,7 +761,11 @@ def parse_account_state_page(page: Page, currency: str = "UNK") -> Optional[Acco
         balance = (
             float("".join(balance_text.split()).replace(",", ""))
             if balance_text
-            else (float("".join(balance_text_new.split()).replace(",", "")) if balance_element_new else 0.0)
+            else (
+                float("".join(balance_text_new.split()).replace(",", ""))
+                if balance_element_new
+                else 0.0
+            )
         )
         wagered = float(wagered_text.strip())
         target = float(target_text.strip())
@@ -561,21 +799,36 @@ def parse_account_state_res(res: Response, currency: str = "UNK") -> AccountStat
         AccountState: An AccountState object containing all parsed account information.
     """
     # Select all account state elements
-    balance_selector = res.css(selector="span[class=user_balance]", identifier=f"balance_{currency}")
-    wagered_selector = res.css(selector="b[id=total_wagered]", identifier=f"wagered_{currency}")
-    target_selector = res.css(selector="b[id=wagering_target]", identifier=f"target_{currency}")
-    remaining_claims_selector = res.css(
-        selector="b[class=faucet_claims_remaining]", identifier=f"remaining_claims_{currency}"
+    balance_selector = res.css(
+        selector="span[class=user_balance]", identifier=f"balance_{currency}"
     )
-    free_spins_selector = res.css(selector="span[id=free_spins]", identifier=f"free_spins_{currency}")
-    countdown_selector = res.css(selector='div[id="faucet_countdown_clock"]', identifier=f"countdown_{currency}")
+    wagered_selector = res.css(
+        selector="b[id=total_wagered]", identifier=f"wagered_{currency}"
+    )
+    target_selector = res.css(
+        selector="b[id=wagering_target]", identifier=f"target_{currency}"
+    )
+    remaining_claims_selector = res.css(
+        selector="b[class=faucet_claims_remaining]",
+        identifier=f"remaining_claims_{currency}",
+    )
+    free_spins_selector = res.css(
+        selector="span[id=free_spins]", identifier=f"free_spins_{currency}"
+    )
+    countdown_selector = res.css(
+        selector='div[id="faucet_countdown_clock"]', identifier=f"countdown_{currency}"
+    )
 
     # Extract text values with defaults
     balance_text = balance_selector.get().text if balance_selector.get() else "0.0"
     wagered_text = wagered_selector.get().text if wagered_selector.get() else "0.0"
     target_text = target_selector.get().text if target_selector.get() else "0.0"
-    remaining_claims_text = remaining_claims_selector.get().text if remaining_claims_selector.get() else "0"
-    free_spins_text = free_spins_selector.get().text if free_spins_selector.get() else "0"
+    remaining_claims_text = (
+        remaining_claims_selector.get().text if remaining_claims_selector.get() else "0"
+    )
+    free_spins_text = (
+        free_spins_selector.get().text if free_spins_selector.get() else "0"
+    )
 
     # Parse numeric values
     balance = float(balance_text.strip().replace(",", "").strip())
@@ -590,7 +843,10 @@ def parse_account_state_res(res: Response, currency: str = "UNK") -> AccountStat
     # If Page object is provided, use it to query the live DOM (with JavaScript-generated content)
     # Fallback to Response object parsing (may not work for JavaScript-generated content)
     countdown_element: Selector = countdown_selector.get()
-    log.info("countdown_element exists: %s (using Response fallback)", countdown_element is not None)
+    log.info(
+        "countdown_element exists: %s (using Response fallback)",
+        countdown_element is not None,
+    )
     if countdown_element:
         # Parse the flipclock value - extract minutes and seconds from the flip clock
         active_digits_selector = res.css(
@@ -599,7 +855,10 @@ def parse_account_state_res(res: Response, currency: str = "UNK") -> AccountStat
         )
 
         active_digits = active_digits_selector.get_all()
-        log.info("Found %d active digit elements (from Response)", len(active_digits) if active_digits else 0)
+        log.info(
+            "Found %d active digit elements (from Response)",
+            len(active_digits) if active_digits else 0,
+        )
 
         if active_digits and len(active_digits) >= 4:
             # Extract the 4 digits: MM:SS
@@ -609,8 +868,13 @@ def parse_account_state_res(res: Response, currency: str = "UNK") -> AccountStat
                 second_tens = active_digits[2].text.strip()[0]
                 second_ones = active_digits[3].text.strip()[0]
 
-                time_remaining = f"{minute_tens}{minute_ones}:{second_tens}{second_ones}"
-                log.info("Flipclock time remaining (from Response): %s (MM:SS)", time_remaining)
+                time_remaining = (
+                    f"{minute_tens}{minute_ones}:{second_tens}{second_ones}"
+                )
+                log.info(
+                    "Flipclock time remaining (from Response): %s (MM:SS)",
+                    time_remaining,
+                )
             except (IndexError, AttributeError) as e:
                 log.warning("Failed to parse flipclock digits: %s", e)
         else:
@@ -626,107 +890,12 @@ def parse_account_state_res(res: Response, currency: str = "UNK") -> AccountStat
     )
 
 
-def google_oauth_login_page_make() -> Callable[[Page], None]:
-    """Create a Google OAuth login page action.
-
-    Returns:
-        tuple[Callable[[Page], None], Callable[[], bool]]: A tuple containing:
-            - The Google OAuth login page action function
-            - A function that always returns False (Google OAuth doesn't auto-claim)
-    """
-
-    def google_login_page(page: Page):
-        """
-        Perform Google OAuth login on the given page.
-        Args:
-            page (Page): The Playwright page object.
-        Returns:
-            None
-        """
-        # Wait for page to load
-        page.wait_for_load_state("domcontentloaded", timeout=5000)
-
-        # Look for and click Google sign-in button
-        google_button_selectors = [
-            "button:has-text('Google')",
-            "a:has-text('Google')",
-            "button:has-text('Sign in with Google')",
-            "[class*='google'][class*='login']",
-            "[id*='google'][id*='login']",
-        ]
-
-        google_button_clicked = False
-        for selector in google_button_selectors:
-            try:
-                page.get_by_text
-                page.locator(selector).first.click(delay=gaussian_random_delay(), timeout=2000)
-                google_button_clicked = True
-                log.info("Clicked Google sign-in button with selector: %s", selector)
-                break
-            except Exception:
-                continue
-
-        if not google_button_clicked:
-            log.error("Could not find Google sign-in button")
-            return
-
-        # Wait for Google login page or redirect
-        try:
-            page.wait_for_url("**/accounts.google.com/**", timeout=10000)
-        except Exception:
-            log.info("Already logged in or no redirect to Google login page")
-            return
-
-        # Fill in Google email
-        email = os.getenv("GOOGLE_EMAIL")
-        if not email:
-            log.error("GOOGLE_EMAIL environment variable not set")
-            return
-
-        try:
-            page.fill('input[type="email"]', email, timeout=5000)
-            page.click('button:has-text("Next")', delay=gaussian_random_delay(), timeout=3000)
-            log.info("Entered Google email")
-        except Exception as e:
-            log.error("Failed to enter email: %s", e)
-            return
-
-        # Fill in password
-        password = os.getenv("GOOGLE_PASSWORD")
-        if not password:
-            log.error("GOOGLE_PASSWORD environment variable not set")
-            return
-
-        try:
-            page.wait_for_selector('input[type="password"]', state="visible", timeout=10000)
-            page.fill('input[type="password"]', password, timeout=5000)
-            page.click('button:has-text("Next")', delay=gaussian_random_delay(), timeout=3000)
-            log.info("Entered Google password")
-        except Exception as e:
-            log.error("Failed to enter password: %s", e)
-            return
-
-        # Wait for redirect back to the original site
-        try:
-            page.wait_for_load_state("networkidle", timeout=30000)
-            log.info("Google OAuth login completed successfully")
-        except Exception as e:
-            log.warning("Timeout waiting for redirect, continuing: %s", e)
-
-    def was_claim_attempted() -> bool:
-        """Google OAuth login never auto-claims.
-
-        Returns:
-            bool: Always False
-        """
-        return False
-
-    return google_login_page, was_claim_attempted
-
-
 def login_page_make(
-    username: str, password: str, currency: str = "UNK", enable_screenshots: bool = False
-) -> Callable[[Page], None]:
+    username: str,
+    password: str,
+    currency: str = "UNK",
+    enable_screenshots: bool = False,
+) -> tuple[Callable[[Page], None], Callable[[], bool]]:
     """Create a login page action.
 
     Args:
@@ -786,7 +955,9 @@ def login_page_make(
     return login_page, was_claim_attempted
 
 
-def make_claim_faucet(selector: str, currency: str = "UNK", enable_screenshots: bool = False) -> Callable[[Page], None]:
+def make_claim_faucet(
+    selector: str, currency: str = "UNK", enable_screenshots: bool = False
+) -> Callable[[Page], None]:
     """Create a claim faucet action.
 
     Args:
@@ -811,15 +982,322 @@ def make_claim_faucet(selector: str, currency: str = "UNK", enable_screenshots: 
         try:
             page.locator(selector).scroll_into_view_if_needed(timeout=2000)
             page.locator(selector).wait_for(state="visible", timeout=2000)
-            page.wait_for_timeout(gaussian_random_delay(mean=500, stddev=100))  # Wait for some time, because.
-        except Exception:
-            log.info("No captcha box detected.")
+            page.wait_for_timeout(
+                gaussian_random_delay(mean=500, stddev=100)
+            )  # Wait for some time, because.
+        except Exception as e:
+            log.info("No box detected: %s", e)
             return
 
         delay = gaussian_random_delay()
         page.click(selector, delay=delay)
 
     return claim_faucet
+
+
+def make_bonus_rolls_faucet(
+    tab_selector: str = "div.faucet-tabs",
+    roll_selector: str = "#process_claim_bonus_faucet",
+    currency: str = "UNK",
+    enable_screenshots: bool = False,
+    max_rolls: int = 300,
+    wait_between_ms: int = 1000,
+) -> Callable[[Page], int]:
+    """Create an action that navigates to the bonus tab and performs repeated bonus rolls.
+
+    This action will:
+    - Click the tab (if present) to reveal the bonus rolls UI
+    - Repeatedly click the roll button up to `max_rolls` times
+    - Wait a randomized delay between rolls (centered on `wait_between_ms`)
+    - Stop early if the roll button disappears or if free spins drop to zero (if detectable)
+
+    Returns:
+        Callable[[Page], int]: A page action that returns the number of rolls performed.
+    """
+
+    @screenshot_action
+    def bonus_rolls_action(page: Page) -> int:
+        _ = currency
+        _ = enable_screenshots
+
+        rolls_done = 0
+
+        try:
+            # Try to open the bonus tab if a tab selector is provided
+            if tab_selector:
+                try:
+                    tab = page.locator(tab_selector).first
+                    if tab.count() > 0:
+                        tab.click(delay=gaussian_random_delay(), timeout=3000)
+                        page.wait_for_timeout(500)
+                except Exception:
+                    log.debug("Bonus tab not found or not clickable: %s", tab_selector)
+
+            for i in range(max_rolls):
+                # Try to find the roll button
+                page.wait_for_timeout(gaussian_random_delay(mean=1000, stddev=100))
+                try:
+                    roll_btn = page.locator(roll_selector).first
+                    roll_count = roll_btn.count()
+                except Exception:
+                    log.debug("Error locating roll button: %s", roll_selector)
+                    break
+
+                if not roll_count or roll_count == 0:
+                    log.info("No roll button available (stopping).")
+                    break
+
+                # Click the roll button
+                try:
+                    delay = gaussian_random_delay()
+                    roll_btn.click(delay=delay)
+                    rolls_done += 1
+                    log.info("Performed bonus roll %d/%d", rolls_done, max_rolls)
+                    first = page.query_selector(".roll_numbers .first_digit")
+                    second = page.query_selector(".roll_numbers .second_digit")
+                    third = page.query_selector(".roll_numbers .third_digit")
+                    fourth = page.query_selector(".roll_numbers .fourth_digit")
+                    fifth = page.query_selector(".roll_numbers .fifth_digit")
+                    result = first.inner_text() + second.inner_text() + third.inner_text() + fourth.inner_text() + fifth.inner_text()
+                    log.info("Roll result: %s", result)
+                except Exception as e:
+                    log.warning("Failed to click roll button: %s", e)
+                    break
+
+                # Wait a bit for UI to update and to be polite
+                wait_ms = int(max(0, random.gauss(wait_between_ms, max(1, wait_between_ms * 0.1))))
+                page.wait_for_timeout(wait_ms)
+
+                # If we can detect free_spins on the page, stop if zero
+                try:
+                    free_spins_element: Optional[ElementHandle] = page.query_selector(
+                        "span[id=free_spins]"
+                    )
+                    if free_spins_element:
+                        text = free_spins_element.text_content() or "0"
+                        try:
+                            remaining = int(text.strip())
+                            if remaining <= 0:
+                                log.info("No remaining free spins detected (stopping).")
+                                break
+                        except Exception:
+                            # could not parse number; continue
+                            pass
+                except Exception:
+                    pass
+
+            log.info("Finished bonus rolls; total performed: %d", rolls_done)
+        except Exception:
+            log.exception("Unexpected error during bonus rolls action")
+
+        return rolls_done
+
+    return bonus_rolls_action
+
+
+def prepare_user_data_dir(user_data_dir: str) -> tuple[str, bool]:
+    """If the Firefox profile is locked (browser running), copy it to a temp dir.
+
+    Returns:
+        tuple: (path_to_use, is_temp) - the path to use and whether it's a temp copy.
+    """
+    import shutil
+    import tempfile
+
+    profile_path = Path(user_data_dir)
+    lock_file = profile_path / "lock"
+
+    if lock_file.exists() or lock_file.is_symlink():
+        log.info(
+            "Firefox profile is locked (browser running). "
+            "Copying profile to temp directory..."
+        )
+        temp_dir = tempfile.mkdtemp(prefix="pick_profile_")
+        # Copy only essential dirs/files for IndexedDB access
+        for item in ["storage", "storage.sqlite", "prefs.js", "permissions.sqlite"]:
+            src = profile_path / item
+            dst = Path(temp_dir) / item
+            if src.exists():
+                if src.is_dir():
+                    shutil.copytree(src, dst)
+                else:
+                    shutil.copy2(src, dst)
+        log.info("Profile copied to %s", temp_dir)
+        return temp_dir, True
+
+    return user_data_dir, False
+
+
+def make_scrape_bet_history_action(
+    currency: str = "UNK",
+) -> tuple[Callable[[Page], None], list["BetHistoryEntry"]]:
+    """Create a page_action that extracts bet history from localforage.
+
+    These pick sites store bet history client-side in the browser's IndexedDB
+    via localforage (keys: 'my_bet_data_large' and 'my_bet_data'). This requires
+    --user-data-dir pointing to the user's actual browser profile.
+
+    Returns:
+        tuple: (page_action_callable, shared_entries_list)
+            The page_action appends parsed entries to the shared list.
+    """
+    entries: list[BetHistoryEntry] = []
+
+    def scrape_bet_history_action(page: Page) -> None:
+        # Read bet data directly from IndexedDB using native browser API
+        # (avoids depending on the localforage JS library being loaded)
+        bet_data = page.evaluate("""() => {
+            function readKey(db, key) {
+                return new Promise((resolve, reject) => {
+                    try {
+                        const tx = db.transaction('keyvaluepairs', 'readonly');
+                        const store = tx.objectStore('keyvaluepairs');
+                        const req = store.get(key);
+                        req.onsuccess = () => resolve(req.result);
+                        req.onerror = () => resolve(null);
+                    } catch(e) { resolve(null); }
+                });
+            }
+            return new Promise((resolve) => {
+                const req = indexedDB.open('localforage');
+                req.onsuccess = async (event) => {
+                    const db = event.target.result;
+                    const large = await readKey(db, 'my_bet_data_large');
+                    const small = await readKey(db, 'my_bet_data');
+                    db.close();
+                    resolve({large: large, small: small});
+                };
+                req.onerror = () => resolve(null);
+                // If the DB doesn't exist, onupgradeneeded fires for version 1
+                req.onupgradeneeded = (event) => {
+                    // DB is empty/new, no data to read
+                    event.target.transaction.abort();
+                    resolve(null);
+                };
+            });
+        }""")
+
+        if not bet_data:
+            log.warning("[%s] Could not open localforage IndexedDB", currency)
+            return
+
+        large_data = bet_data.get("large")
+        small_data = bet_data.get("small")
+
+        # Use whichever has more data, preferring large
+        raw_entries = large_data or small_data or []
+
+        if not raw_entries:
+            log.warning(
+                "[%s] No bet data found in localforage. "
+                "Make sure --user-data-dir points to your browser profile "
+                "that has the bet history.",
+                currency,
+            )
+            return
+
+        log.info("[%s] Found %d entries in localforage", currency, len(raw_entries))
+
+        for item in raw_entries:
+            try:
+                # localforage entries have: game_name, bet_amount, payout, profit,
+                # server_seed, game_id, and optionally timestamp/time
+                game_name = item.get("game_name", "Unknown")
+                bet_amount = str(item.get("bet_amount", "0"))
+                payout = str(item.get("payout", "0"))
+                profit = str(item.get("profit", "0"))
+                time_val = item.get("time", item.get("timestamp", ""))
+                # Convert Unix timestamp to readable datetime
+                try:
+                    time_str = datetime.fromtimestamp(int(time_val)).strftime("%Y-%m-%d %H:%M:%S")
+                except (ValueError, TypeError, OSError):
+                    time_str = str(time_val)
+
+                bet_val = float(bet_amount.replace(",", "").strip())
+                # payout field contains the multiplier display (e.g. "4.02×")
+                payout_str = payout.replace("\u00d7", "").replace("x", "").replace(",", "")
+                # Strip any HTML color spans
+                payout_clean = re.sub(r'<[^>]+>', '', payout_str).strip()
+                multiplier_val = float(payout_clean) if payout_clean else 0.0
+                # Same for profit
+                profit_clean = re.sub(r'<[^>]+>', '', profit.replace(",", "")).strip()
+                profit_val = float(profit_clean) if profit_clean else 0.0
+
+                entries.append(BetHistoryEntry(
+                    time=time_str,
+                    game=game_name,
+                    bet=bet_val,
+                    multiplier=multiplier_val,
+                    profit=profit_val,
+                ))
+            except (ValueError, TypeError, KeyError) as e:
+                log.debug("[%s] Skipping entry: %s (data: %s)", currency, e, str(item)[:100])
+                continue
+
+        log.info("[%s] Parsed %d bet history entries from localforage", currency, len(entries))
+
+    return scrape_bet_history_action, entries
+
+
+def save_bet_history_csv(entries: list["BetHistoryEntry"], currency: str) -> str:
+    """Save bet history entries to a CSV file, merging with existing data.
+
+    Args:
+        entries: List of BetHistoryEntry objects to save.
+        currency: Currency code used for the filename.
+
+    Returns:
+        str: Path to the saved CSV file.
+    """
+    directory = Path("bet_history")
+    directory.mkdir(exist_ok=True)
+
+    prefix = currency.upper()
+    filepath = directory / f"{prefix}.csv"
+
+    # Load existing entries for dedup
+    existing_keys: set[str] = set()
+    existing_rows: list[BetHistoryEntry] = []
+    if filepath.exists():
+        with open(filepath, "r", newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                try:
+                    entry = BetHistoryEntry(
+                        time=row["time"],
+                        game=row["game"],
+                        bet=float(row["bet"]),
+                        multiplier=float(row["multiplier"]),
+                        profit=float(row["profit"]),
+                    )
+                    key = f"{entry.time}|{entry.game}|{entry.bet}"
+                    if key not in existing_keys:
+                        existing_keys.add(key)
+                        existing_rows.append(entry)
+                except (KeyError, ValueError) as e:
+                    log.warning("Skipping malformed CSV row: %s", e)
+
+    # Merge new entries, dedup by time+game+bet
+    new_count = 0
+    for entry in entries:
+        key = f"{entry.time}|{entry.game}|{entry.bet}"
+        if key not in existing_keys:
+            existing_keys.add(key)
+            existing_rows.append(entry)
+            new_count += 1
+
+    # Sort by time descending (newest first)
+    existing_rows.sort(key=lambda e: e.time, reverse=True)
+
+    # Write all entries
+    with open(filepath, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["time", "game", "bet", "multiplier", "profit"])
+        for entry in existing_rows:
+            writer.writerow([entry.time, entry.game, entry.bet, entry.multiplier, entry.profit])
+
+    log.info("Saved %d entries (%d new) to %s", len(existing_rows), new_count, filepath)
+    return str(filepath)
 
 
 def pick_to_dict_json_safe(pick_obj: Pick) -> Dict[str, Any]:
@@ -840,7 +1318,9 @@ def pick_to_dict_json_safe(pick_obj: Pick) -> Dict[str, Any]:
             (dt.isoformat(), balance, wagered, target, remaining_claims, free_spins)
             for dt, balance, wagered, target, remaining_claims, free_spins in pick_obj.history
         ],
-        "last_update": pick_obj.last_update.isoformat() if pick_obj.last_update else None,
+        "last_update": pick_obj.last_update.isoformat()
+        if pick_obj.last_update
+        else None,
         "target": pick_obj.target,
         "remaining_claims": pick_obj.remaining_claims,
         "free_spins": pick_obj.free_spins,
@@ -860,10 +1340,21 @@ def json_to_pick(data: Dict[str, Any]) -> Pick:
     pick_obj.balance = data["balance"]
     pick_obj.wagered = data["wagered"]
     pick_obj.history = [
-        (datetime.fromisoformat(dt), balance, wagered, target, remaining_claims, free_spins)
-        for dt, balance, wagered, target, remaining_claims, free_spins in data["history"]
+        (
+            datetime.fromisoformat(dt),
+            balance,
+            wagered,
+            target,
+            remaining_claims,
+            free_spins,
+        )
+        for dt, balance, wagered, target, remaining_claims, free_spins in data[
+            "history"
+        ]
     ]
-    pick_obj.last_update = datetime.fromisoformat(data["last_update"]) if data["last_update"] else None
+    pick_obj.last_update = (
+        datetime.fromisoformat(data["last_update"]) if data["last_update"] else None
+    )
     pick_obj.target = data["target"]
     pick_obj.remaining_claims = data.get("remaining_claims", 0)
     pick_obj.free_spins = data.get("free_spins", 0)
@@ -911,23 +1402,34 @@ def load_picks(directory: str = "picks_data") -> list[Pick]:
 
 def check_logged_in(res: Response) -> bool:
     """
-    Check if the user is logged in by looking for a logout link in the response.
-    Args:
-        res (Response): The response object to check.
-    Returns:
-        bool: True if logged in, False otherwise.
-    """
-    # Check for logout button by class
-    logout_link = res.css(selector="li[class='lg_logout_btn']", identifier="logout_btn")
+    Check if the user is logged in.
 
-    # Check for logout link by various common patterns
+    Primary signal: the server redirects authenticated users off /login.php
+    (usually to /faucet.php). If the final response URL is no longer on the
+    login page, the session cookie was accepted. The older DOM-based check
+    looked for logout <a>/<li> elements, but those are rendered client-side
+    by JS and aren't in the fetched HTML, so it reported "failed" even
+    after a successful login.
+
+    DOM-based checks are kept as a fallback for cases where URL info is
+    unavailable (e.g. a Response constructed without one).
+    """
+    url = (getattr(res, "url", None) or "").lower()
+    if url and "login.php" not in url:
+        return True
+
+    logout_link = res.css(selector="li[class='lg_logout_btn']", identifier="logout_btn")
     logout_link1 = res.css(selector="a#process_logout", identifier="logout_link_class")
+    logout_link11 = res.css(selector="#process_logout > li", identifier="logout_link_slide_menu")
     logout_link2 = res.css(selector="a[href*='logout']", identifier="logout_link_href")
-    logout_link3 = res.css(selector="a.logout", identifier="logout_link_class").filter(lambda el: el.has_text("Logout"))
+    logout_link3 = res.css(selector="a.logout", identifier="logout_link_class").filter(
+        lambda el: el.has_text("Logout")
+    )
 
     return (
         logout_link.get() is not None
         or logout_link1.get() is not None
+        or logout_link11.get() is not None
         or logout_link2.get() is not None
         or logout_link3.get() is not None
     )
@@ -943,11 +1445,45 @@ def summarize_picks(picks: List[Pick]) -> None:
     """
     log.info(
         "{: <21} | {: <8} | {: >15} | {: >15} | {: >15} | {: >15} | {: >8} | {: >12} | {: >15}".format(
-            "URL", "Currency", "Balance", "Wagered", "Target", "Diff", "Claims", "Bonus Spins", "Cooldown Timer"
+            "URL",
+            "Currency",
+            "Balance",
+            "Wagered",
+            "Target",
+            "Diff",
+            "Claims",
+            "Bonus Spins",
+            "Cooldown Timer",
         )
     )
     for pick in picks:
         log.info(pick)
+
+
+@contextlib.contextmanager
+def safe_stealthy_session(**kwargs):
+    """StealthySession wrapper that swallows cleanup errors.
+
+    Why: if the browser dies mid-fetch (Cloudflare hang that the user kills,
+    Playwright TargetClosedError, etc.), the inner exception is caught by
+    the caller, but StealthySession.__exit__ -> context.close() then throws
+    "Connection closed while reading from the driver" because the driver
+    process is already gone. That second exception escapes any try/except
+    inside the `with` body and crashes main. Swallowing it lets the loop
+    move on to the next pick.
+    """
+    session = StealthySession(**kwargs)
+    session.__enter__()
+    try:
+        yield session
+    finally:
+        try:
+            session.__exit__(None, None, None)
+        except Exception as teardown_err:
+            log.warning(
+                "Session cleanup failed (browser likely crashed or was killed): %s",
+                teardown_err,
+            )
 
 
 def main(
@@ -960,6 +1496,12 @@ def main(
     play_keno: bool = False,
     summarize: bool = False,
     enable_screenshots: bool = False,
+    do_bonus_rolls: bool = False,
+    bonus_tab_selector: str | None = None,
+    bonus_roll_selector: str | None = None,
+    max_bonus_rolls: int = 100,
+    bonus_wait_ms: int = 1000,
+    scrape_history: bool = False,
 ):
     """
     Main function to run the scraper.
@@ -977,11 +1519,19 @@ def main(
     Returns:
         None
     """
+    # If scraping history with a user-data-dir, prepare profile (copy if locked)
+    temp_profile_dir: str | None = None
+    if scrape_history and user_data_dir:
+        user_data_dir, is_temp = prepare_user_data_dir(user_data_dir)
+        if is_temp:
+            temp_profile_dir = user_data_dir
+
     finished_picks: List[Pick] = []
     tries: Dict[str, int] = {x.url: 0 for x in picks}
     while len(picks) > 0:
         pick = picks.pop(0)
         tries[pick.url] += 1
+        log.info("Processing pick: %s (%d/%d)", pick.url, tries[pick.url], 3)
         if tries[pick.url] > 3:
             log.error("Exceeded maximum retries for %s, skipping.", pick.url)
             continue
@@ -991,68 +1541,169 @@ def main(
         else:
             username, password, _ = get_credentials(pick.url)
             login_page, claim_already_attempted = login_page_make(
-                username, password, currency=pick.currency, enable_screenshots=enable_screenshots
+                username,
+                password,
+                currency=pick.currency,
+                enable_screenshots=enable_screenshots,
             )
 
-        additional_args = {}
-        if user_data_dir is not None:
-            additional_args["user_data_dir"] = user_data_dir
-        else:
-            additional_args = {}
-
-        with StealthySession(
+        with safe_stealthy_session(
             proxy=proxy,
             headless=headless,
             humanize=True,
             solve_cloudflare=True,
             google_search=False,
-            additional_args=additional_args,
+            user_data_dir=user_data_dir or "",
         ) as session:
             try:
                 login_response: Response = session.fetch(
-                    f"{pick.url}login.php", page_action=login_page, wait=5000, timeout=30000
+                    f"{pick.url}login.php",
+                    page_action=login_page,
+                    wait=3000,
                 )
 
-                if check_logged_in(login_response):
+                logged_in = check_logged_in(login_response)
+
+                # If login response was a redirect (302), the Response body
+                # won't contain logout links. Fetch the main page to verify.
+                if not logged_in:
+                    log.info(
+                        "Login check failed on initial response (status %s), "
+                        "verifying via main page...",
+                        login_response.status,
+                    )
+                    verify_response: Response = session.fetch(
+                        pick.url,
+                        wait=2000,
+                        solve_cloudflare=False,
+                    )
+                    logged_in = check_logged_in(verify_response)
+
+                if logged_in:
                     finished_picks.append(pick)
                     log.info("Logged in to %s successfully", pick.url)
                 else:
                     log.error("Failed to log in to %s", pick.url)
-                    picks.append(pick)  # Re-add to the end of the list to try again later
+                    picks.append(
+                        pick
+                    )  # Re-add to the end of the list to try again later
                     continue
 
                 log.debug("%s", pick)
+
+                if scrape_history:
+                    log.info("Scraping bet history for %s...", pick.currency)
+                    history_action, history_entries = make_scrape_bet_history_action(
+                        currency=pick.currency,
+                    )
+                    try:
+                        # Navigate to game_history.php where localforage JS is loaded
+                        session.fetch(
+                            f"{pick.url}game_history.php",
+                            page_action=history_action,
+                            network_idle=True,
+                            wait=3000,
+                            timeout=60000,
+                            solve_cloudflare=False,
+                        )
+                    except Exception:
+                        log.exception("[%s] Error extracting bet history", pick.currency)
+                    if history_entries:
+                        save_bet_history_csv(history_entries, pick.currency)
+                        log.info("[%s] Total: %d entries exported", pick.currency, len(history_entries))
+                    else:
+                        log.warning(
+                            "No bet history found for %s. "
+                            "Bet history is stored in your browser's local storage. "
+                            "Use --user-data-dir to point to your browser profile.",
+                            pick.url,
+                        )
+                    continue
 
                 if skip_claim:
                     log.info("Skipping claim as per --skip-claim")
                     continue
 
                 if claim_already_attempted():
-                    log.info("Skipping claim - already attempted during login (user was already logged in)")
+                    log.info(
+                        "Skipping claim - already attempted during login (user was already logged in)"
+                    )
                     continue
 
                 faucet = make_claim_faucet(
-                    button_selector, currency=pick.currency, enable_screenshots=enable_screenshots
+                    button_selector,
+                    currency=pick.currency,
+                    enable_screenshots=enable_screenshots,
                 )
-                _: Response = session.fetch(f"{pick.url}faucet.php", page_action=faucet, wait=5000, timeout=30000)
+                _: Response = session.fetch(
+                    f"{pick.url}faucet.php",
+                    page_action=faucet,
+                    wait=2000,
+                    timeout=10000,
+                )
+                log.info("after claim attempt for %s", pick.url)
 
-                log.info("About to play keno on %s", pick.url)
+                # Optionally run bonus rolls if requested
+                if do_bonus_rolls:
+                    bonus_action: Optional[Callable[[Page], int]] = None
+                    if bonus_tab_selector and bonus_roll_selector:
+                        bonus_action = make_bonus_rolls_faucet(
+                            tab_selector=bonus_tab_selector,
+                            roll_selector=bonus_roll_selector,
+                            currency=pick.currency,
+                            enable_screenshots=enable_screenshots,
+                            max_rolls=max_bonus_rolls,
+                            wait_between_ms=bonus_wait_ms,
+                        )
+                    else:
+                        bonus_action = make_bonus_rolls_faucet(
+                            currency=pick.currency,
+                            enable_screenshots=enable_screenshots,
+                            max_rolls=max_bonus_rolls,
+                            wait_between_ms=bonus_wait_ms,
+                        )
+                    if bonus_action:
+                        try:
+                            _: Response = session.fetch(
+                                f"{pick.url}faucet.php",
+                                page_action=bonus_action,
+                                solve_cloudflare=False,
+                                wait=2000,
+                            )
+                            # timeout=max(10000, max_bonus_rolls * (bonus_wait_ms + 50)),
+                            log.info("Completed bonus rolls for %s", pick.url)
+                        except Exception:
+                            log.exception("Error running bonus rolls for %s", pick.url)
+                    else:
+                        log.info("No bonus selectors available; skipping bonus rolls for %s", pick.url)
+
                 # Check if Response object has a page attribute
                 if play_keno:
+                    log.info("About to play keno on %s", pick.url)
                     _: Response = session.fetch(
-                        f"{pick.url}keno.php", page_action=play_keno_func, timeout=0, solve_cloudflare=False
+                        f"{pick.url}keno.php",
+                        page_action=play_keno_func,
+                        timeout=0,
+                        solve_cloudflare=False,
                     )
 
                 log.info("Finished processing %s", pick.url)
 
             except Exception as e:
-                log.error("Error fetching %s: %s", pick.url, e)
+                # Include full traceback to make Playwright/Scrapling failures debuggable
+                log.exception("Error fetching %s: %s", pick.url, e)
                 continue
 
     if summarize:
         summarize_picks(finished_picks)
 
     save_picks(finished_picks)
+
+    # Clean up temp profile copy if we made one
+    if temp_profile_dir:
+        import shutil
+        shutil.rmtree(temp_profile_dir, ignore_errors=True)
+        log.info("Cleaned up temp profile copy: %s", temp_profile_dir)
 
 
 def filter_picks(all_picks: List[Pick], only: List[str], skip: List[str]) -> List[Pick]:
@@ -1080,7 +1731,13 @@ def filter_picks(all_picks: List[Pick], only: List[str], skip: List[str]) -> Lis
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--proxy", help="proxy url to use", default=None)
-    parser.add_argument("--user-data-dir", help="path to user data directory", default=None)
+    parser.add_argument(
+        "--user-data-dir",
+        help="path to Firefox profile directory (required for --scrape-history). "
+        "Linux: ~/.mozilla/firefox/*.default-release, "
+        "Windows: %%APPDATA%%\\Mozilla\\Firefox\\Profiles\\*.default-release",
+        default=None,
+    )
     parser.add_argument("--headless", help="run in headless mode", action="store_true")
     parser.add_argument(
         "--google-oauth",
@@ -1092,7 +1749,9 @@ if __name__ == "__main__":
         action="store_true",
         help="skip claiming the faucet (just login and get balance)",
     )
-    parser.add_argument("--summarize", help="summarize the results", action="store_true")
+    parser.add_argument(
+        "--summarize", help="summarize the results", action="store_true"
+    )
     parser.add_argument(
         "--play-keno",
         help="play keno game after claiming the faucet",
@@ -1103,11 +1762,50 @@ if __name__ == "__main__":
         help="enable before/after screenshots for page actions",
         action="store_true",
     )
+    # Bonus rolls options
+    parser.add_argument(
+        "--do-bonus-rolls",
+        help="Navigate to the bonus faucet tab and perform repeated bonus rolls",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--bonus-tab-selector",
+        help="CSS selector to open the bonus tab (required when --do-bonus-rolls is set)",
+        default=None,
+    )
+    parser.add_argument(
+        "--bonus-roll-selector",
+        help="CSS selector for the bonus roll button (required when --do-bonus-rolls is set)",
+        default=None,
+    )
+    parser.add_argument(
+        "--max-bonus-rolls",
+        help="Maximum number of bonus rolls to attempt (default: 100)",
+        type=int,
+        default=100,
+    )
+    parser.add_argument(
+        "--bonus-wait-ms",
+        help="Mean wait time in ms between bonus rolls (default: 1000)",
+        type=int,
+        default=1000,
+    )
+    parser.add_argument(
+        "--scrape-history",
+        help="Scrape full bet history from game_history.php and save to CSV (skips claim/keno/bonus)",
+        action="store_true",
+    )
     group = parser.add_mutually_exclusive_group()
-    group.add_argument("--skip", help="List of picks by currency to skip", nargs="+", default=[])
-    group.add_argument("--only", help="List of picks by currency to run only", nargs="+", default=[])
+    group.add_argument(
+        "--skip", help="List of picks by currency to skip", nargs="+", default=[]
+    )
+    group.add_argument(
+        "--only", help="List of picks by currency to run only", nargs="+", default=[]
+    )
 
     args = parser.parse_args()
+
+    load_env_file()
 
     all_picks = load_picks()
     if not all_picks:
@@ -1125,4 +1823,10 @@ if __name__ == "__main__":
         args.play_keno,
         args.summarize,
         args.enable_screenshots,
+        args.do_bonus_rolls,
+        args.bonus_tab_selector,
+        args.bonus_roll_selector,
+        args.max_bonus_rolls,
+        args.bonus_wait_ms,
+        args.scrape_history,
     )
