@@ -77,38 +77,31 @@ def pre_login(page: Page) -> None:
     open_login_modal(page)
 
 
-# Map the toast confirmation text → currency code. The site spells
-# the names as one word ("SweepsCoins" / "GoldCoins") in the toast.
-_SWITCH_TOAST_TO_CODE = (
-    ("SweepsCoins", "SC"),
-    ("GoldCoins", "GC"),
-)
-# How long to wait for the post-toggle Toastify confirmation. The
-# toast appears within ~200ms of the click on a normal connection;
-# 4s gives margin for slow renders without making the read sluggish.
-_TOAST_TIMEOUT_MS = 4000
-
-
 def read_spinquest_balances(page: Page) -> CasinoAccountState:
-    """Read SpinQuest's SC + GC balances using toggle + toast.
+    """Read SpinQuest's SC + GC balances by toggling and classifying.
 
     SpinQuest's header has a single ``button[data-sentry-component=
-    "Amounts"]`` that toggles between SC and GC on each click. After
-    each toggle, react-toastify pops a confirmation in
-    ``#root > div.Toastify`` reading "You've switched to SweepsCoins"
-    or "...GoldCoins". We use that toast as the source of truth for
-    which currency is currently displayed — much more stable than
-    the per-currency MUI emotion classes (``css-XXX``), which the
-    site rebuilds on each deploy.
+    "Amounts"]`` that toggles between SC and GC on each click. We
+    toggle twice (returning the UI to its pre-call state) and read
+    the displayed value each time, then classify each value by its
+    format:
 
-    Algorithm: hit the toggle twice. After each click, parse the
-    newest toast to learn which currency we just switched to, then
-    read the displayed value and stash it in ``balances[code]``.
-    Two clicks restore the page to its pre-call state.
+      * Strings with a decimal point (e.g. ``3.05``) → SC. Sweeps
+        Coins are dollar-equivalent and always display two decimals.
+      * Strings without a decimal (e.g. ``1,090,000``) → GC. Gold
+        Coins are integer-formatted with thousands separators.
+
+    The classifier is locale-independent — earlier attempts using
+    the post-toggle Toastify text ("You've switched to ...") broke
+    when Camoufox's geo-derived locale switched the message to
+    Spanish. The numeric format stays put.
+
+    The MUI emotion class hashes (``css-179u6ap`` for SC,
+    ``css-17oy78s`` for GC) are also avoided since they churn on
+    every site rebuild.
     """
     balances: Dict[str, float] = {}
     amounts_btn_selector = 'button[data-sentry-component="Amounts"]'
-    toast_selector = "#root div.Toastify .Toastify__toast-body"
 
     # Wait for the Amounts button to mount before we start clicking.
     # SpinQuest's lobby is the slowest of the working set — login +
@@ -123,56 +116,63 @@ def read_spinquest_balances(page: Page) -> CasinoAccountState:
         )
         return CasinoAccountState(balances=balances)
 
-    for _ in range(2):
-        try:
-            page.click(amounts_btn_selector, delay=gaussian_random_delay(), timeout=5000)
-        except BrowserError as e:
-            log.warning("[SpinQuest] toggle click failed: %s", e)
-            break
+    for i in range(2):
+        if i > 0:
+            try:
+                page.click(
+                    amounts_btn_selector,
+                    delay=gaussian_random_delay(),
+                    timeout=5000,
+                )
+                # Brief wait for the value display to update after
+                # the toggle.
+                page.wait_for_timeout(500)
+            except BrowserError as e:
+                log.warning("[SpinQuest] toggle click failed: %s", e)
+                break
 
-        # Toast text identifies the currency we just switched TO.
-        try:
-            page.wait_for_selector(
-                toast_selector, state="visible", timeout=_TOAST_TIMEOUT_MS
-            )
-            toast_text = page.locator(toast_selector).first.text_content() or ""
-        except BrowserError:
-            log.warning(
-                "[SpinQuest] no switch-confirmation toast within %dms; can't map value",
-                _TOAST_TIMEOUT_MS,
-            )
-            continue
-
-        code = next(
-            (c for needle, c in _SWITCH_TOAST_TO_CODE if needle in toast_text),
-            None,
-        )
-        if code is None:
-            log.warning(
-                "[SpinQuest] toast %r didn't match a known currency", toast_text
-            )
-            continue
-
-        # Read the value now showing in the Amounts button.
         try:
             value_text = (
                 page.locator(f"{amounts_btn_selector} p").first.text_content() or ""
-            )
+            ).strip()
         except BrowserError as e:
             log.warning("[SpinQuest] couldn't read value text: %s", e)
             continue
 
+        # Classify by format — decimal => SC, integer => GC.
+        if "." in value_text:
+            code = "SC"
+        elif value_text:
+            code = "GC"
+        else:
+            log.warning("[SpinQuest] empty value text on iter %d", i)
+            continue
+
         try:
-            n = float(value_text.replace(",", "").strip())
-            balances[code] = n
-            log.info("Found %s balance: %s", code, n)
+            n = float(value_text.replace(",", ""))
         except ValueError:
             log.warning("[SpinQuest] couldn't parse value %r as float", value_text)
+            continue
 
-        # Wait out the toast so the next iteration's wait_for_selector
-        # doesn't re-pick the same toast (Toastify auto-dismisses
-        # within ~3s; small fixed wait is fine here).
-        page.wait_for_timeout(1500)
+        if code in balances:
+            log.warning(
+                "[SpinQuest] re-read same currency code %s on iter %d "
+                "(both reads classified the same way: was %s, now %s); "
+                "toggle may not have flipped",
+                code, i, balances[code], n,
+            )
+        balances[code] = n
+        log.info("Found %s balance: %s", code, n)
+
+    # Toggle once more to restore initial state — we toggled twice
+    # if both reads succeeded (already restored), once if only one
+    # iteration ran. Net: we want an even number of toggles total.
+    # The loop above does N iterations with N-1 toggles, so we
+    # need one final toggle to balance.
+    try:
+        page.click(amounts_btn_selector, delay=gaussian_random_delay(), timeout=5000)
+    except BrowserError:
+        pass
 
     return CasinoAccountState(balances=balances)
 
@@ -199,11 +199,10 @@ def create_spinquest_config() -> CasinoConfig:
         # (the only differentiator is MUI's hashed emotion class,
         # which churns on every site rebuild) work reliably. Instead,
         # ``custom_balance_parser=read_spinquest_balances`` below
-        # uses the post-toggle Toastify confirmation as a stable
-        # source of truth ("You've switched to SweepsCoins/GoldCoins").
-        # The ``Currency`` entries here are documentation only —
-        # the custom parser ignores ``currency_display_config``
-        # entirely.
+        # toggles, reads the displayed value, and classifies by
+        # numeric format (decimal => SC, integer => GC). The
+        # ``Currency`` entries here are documentation only — the
+        # custom parser ignores ``currency_display_config`` entirely.
         currency_display=CurrencyDisplayConfig(
             currencies=[
                 Currency(name="Sweeps Coins", code="SC", selectors=[]),
