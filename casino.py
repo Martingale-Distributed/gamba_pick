@@ -50,6 +50,24 @@ try:
 except ImportError:  # pragma: no cover — patchright is a scrapling dep
     BrowserError = (PlaywrightError,)  # type: ignore[assignment]
 
+# Timeout-only flavor of ``BrowserError``. Useful for distinguishing a
+# benign "selector didn't show up in time" (often a normal "feature not
+# present" path — e.g. a daily-bonus modal that doesn't auto-pop on
+# already-claimed days) from a real navigation/protocol error that
+# happens to share the ``BrowserError`` parent. Catch this first, then
+# the broader ``BrowserError`` for everything else.
+from playwright.sync_api import TimeoutError as _PlaywrightTimeoutError
+
+try:
+    from patchright.sync_api import TimeoutError as _PatchrightTimeoutError
+
+    BrowserTimeoutError: tuple = (
+        _PlaywrightTimeoutError,
+        _PatchrightTimeoutError,
+    )
+except ImportError:  # pragma: no cover — patchright is a scrapling dep
+    BrowserTimeoutError = (_PlaywrightTimeoutError,)  # type: ignore[assignment]
+
 # Default contant values
 CLICK_TIMEOUT_MS = 5000  # Default timeout for click operations
 MAX_CLICK_RETRIES = 3  # Maximum number of retry attempts for failed clicks
@@ -365,6 +383,31 @@ def make_get_casino_account_state(
     return get_casino_account_state
 
 
+def _find_first_visible(page: Page, selector: str) -> Optional[Locator]:
+    """Return the first *visible* match for ``selector``, or ``None``.
+
+    ``Locator(...).first`` matches whichever element happens to come
+    first in the DOM, without regard to visibility. That's a footgun
+    for popup-dismissal flows on MUI/portal-mounted dialogs: hidden
+    carcasses (closed dialogs left in the DOM with ``display: none``
+    or ``visibility: hidden``) routinely appear before the live one,
+    causing ``.first.is_visible()`` to return ``False`` and the
+    dismiss loop to bail while a real popup sits unhandled.
+
+    This helper walks the locator's full match set and returns the
+    first match that ``Locator.is_visible()`` reports as visible.
+    Returns ``None`` if there are no matches at all or none are
+    visible — both cases callers typically treat as "nothing to do".
+    """
+    candidates = page.locator(selector)
+    n = candidates.count()
+    for i in range(n):
+        candidate = candidates.nth(i)
+        if candidate.is_visible():
+            return candidate
+    return None
+
+
 def make_dismiss_popup(
     modal_selector: str,
     close_selector: Optional[str] = None,
@@ -584,8 +627,15 @@ def make_dismiss_popup_stack(
                 return
         for i in range(max_iterations):
             try:
-                modal = page.locator(modal_selector).first
-                if modal.count() == 0 or not modal.is_visible():
+                # Scan all matches for a *visible* one rather than
+                # assuming the first DOM match is the open popup —
+                # MUI / portal-mounted dialogs frequently leave hidden
+                # carcasses in the DOM alongside the live one, and
+                # ``.first`` would short-circuit on those and bail out
+                # while a visible popup sits unhandled. See
+                # ``_find_first_visible`` for the iteration semantics.
+                modal = _find_first_visible(page, modal_selector)
+                if modal is None:
                     if i == 0:
                         log.info(
                             "[popup-stack:%s] no popup to dismiss", label
@@ -608,8 +658,8 @@ def make_dismiss_popup_stack(
                             i,
                         )
                         return
-                close_btn = page.locator(close_selector).first
-                if close_btn.count() == 0 or not close_btn.is_visible():
+                close_btn = _find_first_visible(page, close_selector)
+                if close_btn is None:
                     log.warning(
                         "[popup-stack:%s] popup visible but close "
                         "selector %s not — bailing after %d iter(s)",
@@ -876,15 +926,27 @@ def make_modal_tab_button(
         # daily bonus is already claimed for today. Most sites suppress
         # the trigger (Modo's Daily Bonus card flips text to "Next:
         # <countdown>"; PulszBingo's Wheel of Winners modal stops
-        # auto-popping). Treat that as a normal "already claimed" path
-        # rather than letting the click time out into an ERROR log.
+        # auto-popping). Treat a *timeout* (selector never appeared)
+        # as a normal "already claimed" path. Other ``BrowserError``s
+        # (navigation crashes, protocol errors, invalid selectors)
+        # surface as warnings and fall through so the subsequent click
+        # exposes the real failure rather than masking it as
+        # ``already_claimed``. The timeout matches the click below so
+        # a slow-rendering UI doesn't get misclassified.
         try:
             page.locator(modal_selector).first.wait_for(
-                state="visible", timeout=2000
+                state="visible", timeout=5000
             )
-        except BrowserError:
+        except BrowserTimeoutError:
             log.info("Daily bonus already claimed.")
             return
+        except BrowserError as e:
+            log.warning(
+                "Unexpected error while pre-checking daily bonus modal "
+                "visibility (%s) — proceeding to click and letting any "
+                "real failure surface there.",
+                e,
+            )
 
         try:
             page.click(modal_selector, delay=gaussian_random_delay(), timeout=5000)
@@ -1585,7 +1647,7 @@ def make_generic_accept_or_close_modals(
         try:
             # Find the claim buttons that are not disabled
             enabled_buttons: Locator = page.locator(main_enabled_selector)
-            close_buttons: Locator = page.locator(close_modal_selector)
+            # close_buttons: Locator = page.locator(close_modal_selector)
 
             for attempt in range(
                 1, 11

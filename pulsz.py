@@ -11,10 +11,13 @@ keys off of.
 
 Auth path: Google OAuth
 -----------------------
-This script defaults to ``--google-oauth``. The login link in the
-header is a plain ``<a href="/login">`` — direct navigation to
-``login_url`` lands on the OAuth-capable login page where the
-framework's generic ``GOOGLE_OAUTH_BUTTON`` candidates match.
+This script supports Google OAuth when run with ``--google-oauth``
+(off by default — the framework's generic ``argparse`` doesn't
+flip ``google_oauth=True`` per-site, so manual users have to opt in
+explicitly). The login link in the header is a plain
+``<a href="/login">`` — direct navigation to ``login_url`` lands on
+the OAuth-capable login page where the framework's generic
+``GOOGLE_OAUTH_BUTTON`` candidates match.
 
 First-time setup (interactive — driver pauses for you to complete
 Google sign-in + 2FA + site consent):
