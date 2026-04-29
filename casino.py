@@ -506,6 +506,8 @@ def make_dismiss_popup_stack(
     close_selector: str,
     max_iterations: int = 5,
     name: Optional[str] = None,
+    content_filter: Optional[str] = None,
+    initial_wait_ms: int = 0,
 ) -> Callable[[Page], None]:
     """Build a callback that dismisses a *stack* of popups in a loop.
 
@@ -521,8 +523,12 @@ def make_dismiss_popup_stack(
 
       1. Locate the first visible match for ``modal_selector``.
          If none, exit cleanly (everything is dismissed).
-      2. Click the first visible match for ``close_selector``.
-      3. Brief settle wait so the dialog finishes its dismissal
+      2. If ``content_filter`` is set and the modal's text doesn't
+         contain it (case-insensitive), exit without clicking —
+         the popup is something we don't want to dismiss (e.g. a
+         live daily-claim modal sharing the slot).
+      3. Click the first visible match for ``close_selector``.
+      4. Brief settle wait so the dialog finishes its dismissal
          animation before the next iteration probes.
 
     Args:
@@ -541,6 +547,19 @@ def make_dismiss_popup_stack(
             forever.
         name: Logged label so callers can tell which stack was
             being dismissed. Defaults to ``modal_selector``.
+        content_filter: Optional case-insensitive substring required
+            in the modal body before we'll dismiss it. Designed for
+            sites where one selector slot hosts both a wanted dialog
+            (e.g. live daily-claim modal) and unwanted ones (e.g. a
+            coin-store upsell): ``"buy now"`` targets the upsell
+            without stomping on the claim modal. ``None`` (default)
+            preserves the original "dismiss everything" behavior.
+        initial_wait_ms: First-iteration grace period — wait up to
+            this long for ``modal_selector`` to appear before treating
+            "no popup" as done. Designed for sites that lazy-render
+            their offer modals a second or two after login completes
+            (Pulsz / PulszBingo's coin-store upsell). ``0`` (default)
+            preserves the original instant-check behavior.
 
     Returns:
         ``Callable[[Page], None]`` — wired into
@@ -548,8 +567,21 @@ def make_dismiss_popup_stack(
         post-login popups.
     """
     label = name or modal_selector
+    filter_lower = content_filter.lower() if content_filter else None
 
     def dismiss_popup_stack(page: Page) -> None:
+        if initial_wait_ms > 0:
+            try:
+                page.locator(modal_selector).first.wait_for(
+                    state="visible", timeout=initial_wait_ms
+                )
+            except BrowserError:
+                log.info(
+                    "[popup-stack:%s] no popup appeared within %dms",
+                    label,
+                    initial_wait_ms,
+                )
+                return
         for i in range(max_iterations):
             try:
                 modal = page.locator(modal_selector).first
@@ -565,6 +597,17 @@ def make_dismiss_popup_stack(
                             i,
                         )
                     return
+                if filter_lower is not None:
+                    body = (modal.text_content() or "").lower()
+                    if filter_lower not in body:
+                        log.info(
+                            "[popup-stack:%s] visible popup doesn't match "
+                            "filter %r — leaving it (%d dismissed so far)",
+                            label,
+                            content_filter,
+                            i,
+                        )
+                        return
                 close_btn = page.locator(close_selector).first
                 if close_btn.count() == 0 or not close_btn.is_visible():
                     log.warning(

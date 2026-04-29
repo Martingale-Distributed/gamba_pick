@@ -38,8 +38,25 @@ from casino import (
     LoginConfig,
     MTBClaimConfig,
     get_arg_parser,
+    make_dismiss_popup_stack,
 )
 from scrapling_ext import make_casino_automation
+
+
+# PulszBingo's lobby auto-pops a coin-store upsell ("BUY NOW $X.XX")
+# in the same ``[data-test="common-modal"]`` slot that hosts the
+# Wheel of Winners daily-claim modal. The upsell shows up regardless
+# of claim status (immediately on already-claimed days; right after
+# collect on fresh days). Left up, it blocks DOM interactions for
+# any subsequent step. Content-filter on ``"buy now"`` ensures we
+# never stomp on a live wheel modal that's still waiting on a spin.
+_dismiss_pulszbingo_upsell = make_dismiss_popup_stack(
+    modal_selector='[data-test="common-modal"]',
+    close_selector='[data-test="common-modal"] button[aria-label="back button"]',
+    name="PulszBingo.upsell",
+    content_filter="buy now",
+    initial_wait_ms=3000,
+)
 
 
 def create_pulszbingo_config() -> CasinoConfig:
@@ -66,6 +83,11 @@ def create_pulszbingo_config() -> CasinoConfig:
                 '[data-test*="google" i]',
                 '[data-testid*="google" i]',
             ),
+            # Sweep the post-login coin-store upsell before balance
+            # read / claim attempt — see ``_dismiss_pulszbingo_upsell``
+            # docstring above. Content-filtered so a live wheel claim
+            # modal sharing the slot is left untouched.
+            post_login_callback=_dismiss_pulszbingo_upsell,
         ),
 
         # Same data-test hooks as Pulsz — sister site, same React app.
