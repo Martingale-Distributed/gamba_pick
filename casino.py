@@ -501,6 +501,104 @@ def make_dismiss_popup(
     return dismiss_popup
 
 
+def make_dismiss_popup_stack(
+    modal_selector: str,
+    close_selector: str,
+    max_iterations: int = 5,
+    name: Optional[str] = None,
+) -> Callable[[Page], None]:
+    """Build a callback that dismisses a *stack* of popups in a loop.
+
+    Sites occasionally pile up multiple modal dialogs back-to-back
+    after login (Modo: store popup → "Claim your offer!"; some
+    sites add a third welcome / promo dialog on top). Single-popup
+    ``make_dismiss_popup`` clears one and returns; this helper
+    keeps clicking ``close_selector`` until no element matching
+    ``modal_selector`` is visible, or until ``max_iterations`` is
+    hit.
+
+    Strategy each iteration:
+
+      1. Locate the first visible match for ``modal_selector``.
+         If none, exit cleanly (everything is dismissed).
+      2. Click the first visible match for ``close_selector``.
+      3. Brief settle wait so the dialog finishes its dismissal
+         animation before the next iteration probes.
+
+    Args:
+        modal_selector: CSS for any popup container to look for —
+            typically a framework-specific class (e.g.
+            ``.MuiDialog-root:not([aria-hidden="true"])`` for
+            Material-UI sites). Match-and-visible determines
+            "popup is here", just like ``make_dismiss_popup``.
+        close_selector: CSS for the close button to click. Often
+            a structural pattern (``.MuiDialog-root button[aria-label="close"]``)
+            so the same selector works across re-rendered popup
+            instances.
+        max_iterations: Bound on how many popups to dismiss.
+            Default 5 — generous enough for current site flows,
+            tight enough that a misconfigured selector can't loop
+            forever.
+        name: Logged label so callers can tell which stack was
+            being dismissed. Defaults to ``modal_selector``.
+
+    Returns:
+        ``Callable[[Page], None]`` — wired into
+        ``LoginConfig.post_login_callback`` for sites with stacked
+        post-login popups.
+    """
+    label = name or modal_selector
+
+    def dismiss_popup_stack(page: Page) -> None:
+        for i in range(max_iterations):
+            try:
+                modal = page.locator(modal_selector).first
+                if modal.count() == 0 or not modal.is_visible():
+                    if i == 0:
+                        log.info(
+                            "[popup-stack:%s] no popup to dismiss", label
+                        )
+                    else:
+                        log.info(
+                            "[popup-stack:%s] dismissed %d popup(s)",
+                            label,
+                            i,
+                        )
+                    return
+                close_btn = page.locator(close_selector).first
+                if close_btn.count() == 0 or not close_btn.is_visible():
+                    log.warning(
+                        "[popup-stack:%s] popup visible but close "
+                        "selector %s not — bailing after %d iter(s)",
+                        label,
+                        close_selector,
+                        i,
+                    )
+                    return
+                close_btn.click(
+                    delay=gaussian_random_delay(), timeout=5000
+                )
+                # Settle window for the dialog's leave animation
+                # before we probe again on the next iteration.
+                page.wait_for_timeout(500)
+            except BrowserError as e:
+                log.warning(
+                    "[popup-stack:%s] iter %d failed: %s",
+                    label,
+                    i,
+                    e,
+                )
+                return
+        log.info(
+            "[popup-stack:%s] hit max_iterations=%d; leaving any "
+            "remaining popup",
+            label,
+            max_iterations,
+        )
+
+    return dismiss_popup_stack
+
+
 def make_handle_google_one_tap_popup(
     close_selectors: List[str],
 ) -> Callable[[Page], None]:

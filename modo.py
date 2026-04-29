@@ -20,22 +20,15 @@ Currency display (verified live in the authenticated lobby):
     [data-testid="sc-button"]   — Sweeps Coins
     [data-testid="gc-button"]   — Gold Coins
 
-Both buttons are visible in the header but only the **active**
-currency renders its numeric value (one digit per child span); the
-inactive one shows just an icon. Clicking either button doesn't
-toggle currencies — it opens the coin-store dialog
-(``?dialog=select-package``) for that side. So we can't drive a
-toggle from automation cleanly without entangling the dialog.
-
-Practical consequence: each daily run reads only whichever
-currency is currently active for the user. The other side comes
-back as ``0.0`` because its button text is empty. SC (the
-redeemable side) is the one we care about; tracking will surface
-whichever was active when the runner fired.
-
-The framework's ``clean`` step strips letters / commas / whitespace
-before float-parsing, so the one-digit-per-line layout reads
-through fine.
+Both buttons are visible in the header but the value of each only
+renders cleanly *after* Modo's auto-popup coin-store dialog
+(``?dialog=select-package``) is dismissed — while the dialog is
+open the SC button stays empty because the SC display is suppressed
+behind the modal backdrop. The post-login callback closes the
+dialog via the standard Material-UI ``button[aria-label="close"]``
+inside ``.MuiDialog-root``; after that, both currency buttons
+populate normally and the framework's ``clean`` step strips
+letters / commas / whitespace cleanly.
 
 Daily-claim flow
 ----------------
@@ -60,8 +53,21 @@ from casino import (
     LoginConfig,
     SimpleClaimConfig,
     get_arg_parser,
+    make_dismiss_popup_stack,
 )
 from scrapling_ext import make_casino_automation
+
+
+# Modo auto-pops a stack of Material-UI dialogs on every fresh
+# login (the coin store first, then "Claim your offer!", and
+# possibly more over time). They all use the standard MUI close
+# icon button at ``button[aria-label="close"]``, so a single
+# dismiss-loop walks the stack cleanly.
+_dismiss_modo_popups = make_dismiss_popup_stack(
+    modal_selector='.MuiDialog-root:not([aria-hidden="true"])',
+    close_selector='.MuiDialog-root:not([aria-hidden="true"]) button[aria-label="close"]',
+    name="Modo.post-login-stack",
+)
 
 
 def create_modo_config() -> CasinoConfig:
@@ -82,6 +88,9 @@ def create_modo_config() -> CasinoConfig:
             username_selector='input[type="email"]',
             password_selector='input[type="password"]',
             login_submit_selector='button[type="submit"]',
+            # Dismiss the stacked store + "Claim your offer!" popups
+            # before balance reading.
+            post_login_callback=_dismiss_modo_popups,
         ),
 
         # Modo's data-testid hooks — stable across builds. No
