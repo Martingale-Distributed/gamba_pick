@@ -146,6 +146,7 @@ def make_casino_automation(
             tab_selector=config.claim_config.tab_selector,
             btn_selector=config.claim_config.btn_selector,
             close_btn_selector=config.claim_config.close_btn_selector,
+            btn_visibility_timeout_ms=config.claim_config.btn_visibility_timeout_ms,
         )
     elif config.claim_pattern == "simple":
         if not isinstance(config.claim_config, SimpleClaimConfig):
@@ -285,7 +286,9 @@ def make_casino_automation(
                     user_data_dir,
                 )
         elif google_oauth:
-            oauth_login, _ = google_oauth_login_page_make()
+            oauth_login, _ = google_oauth_login_page_make(
+                button_selectors=config.login.google_oauth_btn_selectors,
+            )
 
             def login_action(page: Page) -> None:
                 if pre_login is not None:

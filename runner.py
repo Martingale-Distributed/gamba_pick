@@ -158,6 +158,24 @@ def load_sites(path: Path = SEED_FILE) -> List[Site]:
     return [Site(**s) for s in data["site"]]
 
 
+def _expand_id_args(raw: List[str]) -> set[str]:
+    """Flatten ``--only`` / ``--skip`` arguments into a set of site ids.
+
+    argparse hands these in as a list of whitespace-split tokens
+    (``nargs="+"``). Each token may itself be a comma-delimited list, so
+    ``--skip spinquest,zula_casino fortune_wins`` collapses to
+    ``{"spinquest", "zula_casino", "fortune_wins"}``. Empty tokens (from
+    stray commas) are dropped.
+    """
+    out: set[str] = set()
+    for arg in raw:
+        for sid in arg.split(","):
+            sid = sid.strip()
+            if sid:
+                out.add(sid)
+    return out
+
+
 def parse_outcome(stdout: str) -> tuple[Dict[str, float], str]:
     """Pull all currency balances + claim outcome out of a stdout blob.
 
@@ -301,10 +319,24 @@ def main() -> int:
         description="Run daily claims across working casino sites."
     )
     parser.add_argument(
-        "--only", nargs="+", metavar="ID", help="Only run these site ids."
+        "--only",
+        nargs="+",
+        metavar="IDS",
+        help=(
+            "Only run these site ids. Accepts space-separated "
+            "(``--only spinquest stake_us``) and/or comma-delimited "
+            "(``--only spinquest,stake_us``) — the two can be mixed."
+        ),
     )
     parser.add_argument(
-        "--skip", nargs="+", metavar="ID", help="Skip these site ids."
+        "--skip",
+        nargs="+",
+        metavar="IDS",
+        help=(
+            "Skip these site ids. Accepts space-separated "
+            "(``--skip spinquest zula_casino``) and/or comma-delimited "
+            "(``--skip spinquest,zula_casino``) — the two can be mixed."
+        ),
     )
     parser.add_argument(
         "--headless", action="store_true", help="Pass --headless to each site."
@@ -325,7 +357,14 @@ def main() -> int:
         ),
     )
     parser.add_argument(
-        "--dry-run", action="store_true", help="Print the plan without running."
+        "--dry-run",
+        "--list",
+        action="store_true",
+        help=(
+            "Print the plan without running. ``--list`` is an alias — handy "
+            "when paired with ``--only``/``--skip`` to preview which sites "
+            "the next sweep would hit."
+        ),
     )
     parser.add_argument(
         "--log-file",
@@ -344,13 +383,13 @@ def main() -> int:
     all_sites = load_sites(opts.seed_file)
     sites = [s for s in all_sites if s.status == "working" and s.module]
     if opts.only:
-        keep = set(opts.only)
+        keep = _expand_id_args(opts.only)
         sites = [s for s in sites if s.id in keep]
         missing = keep - {s.id for s in sites}
         if missing:
             print(f"warn: --only ids not in working set: {sorted(missing)}")
     if opts.skip:
-        skip = set(opts.skip)
+        skip = _expand_id_args(opts.skip)
         sites = [s for s in sites if s.id not in skip]
 
     if not sites:

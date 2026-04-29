@@ -189,7 +189,9 @@ id = "modo"
 name = "Modo US"
 url = "https://modo.us"
 affiliate_link = "https://modo.us?referralCode=84ARNE"
-status = "surveyed"
+status = "working"
+auth = "oauth"
+module = "modo"
 
 [[site]]
 id = "playfame"
@@ -203,14 +205,18 @@ id = "pulsz"
 name = "Pulsz Casino"
 url = "https://www.pulsz.com"
 affiliate_link = "https://www.pulsz.com/?invited_by=mhmmwz"
-status = "surveyed"
+status = "working"
+auth = "oauth"
+module = "pulsz"
 
 [[site]]
 id = "pulszbingo"
 name = "Pulsz Bingo Casino"
 url = "https://www.pulszbingo.com"
 affiliate_link = "https://www.pulszbingo.com/?invited_by=aubxn2"
-status = "surveyed"
+status = "working"
+auth = "oauth"
+module = "pulszbingo"
 
 [[site]]
 id = "rolling_riches"

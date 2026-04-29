@@ -50,6 +50,24 @@ try:
 except ImportError:  # pragma: no cover — patchright is a scrapling dep
     BrowserError = (PlaywrightError,)  # type: ignore[assignment]
 
+# Timeout-only flavor of ``BrowserError``. Useful for distinguishing a
+# benign "selector didn't show up in time" (often a normal "feature not
+# present" path — e.g. a daily-bonus modal that doesn't auto-pop on
+# already-claimed days) from a real navigation/protocol error that
+# happens to share the ``BrowserError`` parent. Catch this first, then
+# the broader ``BrowserError`` for everything else.
+from playwright.sync_api import TimeoutError as _PlaywrightTimeoutError
+
+try:
+    from patchright.sync_api import TimeoutError as _PatchrightTimeoutError
+
+    BrowserTimeoutError: tuple = (
+        _PlaywrightTimeoutError,
+        _PatchrightTimeoutError,
+    )
+except ImportError:  # pragma: no cover — patchright is a scrapling dep
+    BrowserTimeoutError = (_PlaywrightTimeoutError,)  # type: ignore[assignment]
+
 # Default contant values
 CLICK_TIMEOUT_MS = 5000  # Default timeout for click operations
 MAX_CLICK_RETRIES = 3  # Maximum number of retry attempts for failed clicks
@@ -365,6 +383,31 @@ def make_get_casino_account_state(
     return get_casino_account_state
 
 
+def _find_first_visible(page: Page, selector: str) -> Optional[Locator]:
+    """Return the first *visible* match for ``selector``, or ``None``.
+
+    ``Locator(...).first`` matches whichever element happens to come
+    first in the DOM, without regard to visibility. That's a footgun
+    for popup-dismissal flows on MUI/portal-mounted dialogs: hidden
+    carcasses (closed dialogs left in the DOM with ``display: none``
+    or ``visibility: hidden``) routinely appear before the live one,
+    causing ``.first.is_visible()`` to return ``False`` and the
+    dismiss loop to bail while a real popup sits unhandled.
+
+    This helper walks the locator's full match set and returns the
+    first match that ``Locator.is_visible()`` reports as visible.
+    Returns ``None`` if there are no matches at all or none are
+    visible — both cases callers typically treat as "nothing to do".
+    """
+    candidates = page.locator(selector)
+    n = candidates.count()
+    for i in range(n):
+        candidate = candidates.nth(i)
+        if candidate.is_visible():
+            return candidate
+    return None
+
+
 def make_dismiss_popup(
     modal_selector: str,
     close_selector: Optional[str] = None,
@@ -499,6 +542,154 @@ def make_dismiss_popup(
         )
 
     return dismiss_popup
+
+
+def make_dismiss_popup_stack(
+    modal_selector: str,
+    close_selector: str,
+    max_iterations: int = 5,
+    name: Optional[str] = None,
+    content_filter: Optional[str] = None,
+    initial_wait_ms: int = 0,
+) -> Callable[[Page], None]:
+    """Build a callback that dismisses a *stack* of popups in a loop.
+
+    Sites occasionally pile up multiple modal dialogs back-to-back
+    after login (Modo: store popup → "Claim your offer!"; some
+    sites add a third welcome / promo dialog on top). Single-popup
+    ``make_dismiss_popup`` clears one and returns; this helper
+    keeps clicking ``close_selector`` until no element matching
+    ``modal_selector`` is visible, or until ``max_iterations`` is
+    hit.
+
+    Strategy each iteration:
+
+      1. Locate the first visible match for ``modal_selector``.
+         If none, exit cleanly (everything is dismissed).
+      2. If ``content_filter`` is set and the modal's text doesn't
+         contain it (case-insensitive), exit without clicking —
+         the popup is something we don't want to dismiss (e.g. a
+         live daily-claim modal sharing the slot).
+      3. Click the first visible match for ``close_selector``.
+      4. Brief settle wait so the dialog finishes its dismissal
+         animation before the next iteration probes.
+
+    Args:
+        modal_selector: CSS for any popup container to look for —
+            typically a framework-specific class (e.g.
+            ``.MuiDialog-root:not([aria-hidden="true"])`` for
+            Material-UI sites). Match-and-visible determines
+            "popup is here", just like ``make_dismiss_popup``.
+        close_selector: CSS for the close button to click. Often
+            a structural pattern (``.MuiDialog-root button[aria-label="close"]``)
+            so the same selector works across re-rendered popup
+            instances.
+        max_iterations: Bound on how many popups to dismiss.
+            Default 5 — generous enough for current site flows,
+            tight enough that a misconfigured selector can't loop
+            forever.
+        name: Logged label so callers can tell which stack was
+            being dismissed. Defaults to ``modal_selector``.
+        content_filter: Optional case-insensitive substring required
+            in the modal body before we'll dismiss it. Designed for
+            sites where one selector slot hosts both a wanted dialog
+            (e.g. live daily-claim modal) and unwanted ones (e.g. a
+            coin-store upsell): ``"buy now"`` targets the upsell
+            without stomping on the claim modal. ``None`` (default)
+            preserves the original "dismiss everything" behavior.
+        initial_wait_ms: First-iteration grace period — wait up to
+            this long for ``modal_selector`` to appear before treating
+            "no popup" as done. Designed for sites that lazy-render
+            their offer modals a second or two after login completes
+            (Pulsz / PulszBingo's coin-store upsell). ``0`` (default)
+            preserves the original instant-check behavior.
+
+    Returns:
+        ``Callable[[Page], None]`` — wired into
+        ``LoginConfig.post_login_callback`` for sites with stacked
+        post-login popups.
+    """
+    label = name or modal_selector
+    filter_lower = content_filter.lower() if content_filter else None
+
+    def dismiss_popup_stack(page: Page) -> None:
+        if initial_wait_ms > 0:
+            try:
+                page.locator(modal_selector).first.wait_for(
+                    state="visible", timeout=initial_wait_ms
+                )
+            except BrowserError:
+                log.info(
+                    "[popup-stack:%s] no popup appeared within %dms",
+                    label,
+                    initial_wait_ms,
+                )
+                return
+        for i in range(max_iterations):
+            try:
+                # Scan all matches for a *visible* one rather than
+                # assuming the first DOM match is the open popup —
+                # MUI / portal-mounted dialogs frequently leave hidden
+                # carcasses in the DOM alongside the live one, and
+                # ``.first`` would short-circuit on those and bail out
+                # while a visible popup sits unhandled. See
+                # ``_find_first_visible`` for the iteration semantics.
+                modal = _find_first_visible(page, modal_selector)
+                if modal is None:
+                    if i == 0:
+                        log.info(
+                            "[popup-stack:%s] no popup to dismiss", label
+                        )
+                    else:
+                        log.info(
+                            "[popup-stack:%s] dismissed %d popup(s)",
+                            label,
+                            i,
+                        )
+                    return
+                if filter_lower is not None:
+                    body = (modal.text_content() or "").lower()
+                    if filter_lower not in body:
+                        log.info(
+                            "[popup-stack:%s] visible popup doesn't match "
+                            "filter %r — leaving it (%d dismissed so far)",
+                            label,
+                            content_filter,
+                            i,
+                        )
+                        return
+                close_btn = _find_first_visible(page, close_selector)
+                if close_btn is None:
+                    log.warning(
+                        "[popup-stack:%s] popup visible but close "
+                        "selector %s not — bailing after %d iter(s)",
+                        label,
+                        close_selector,
+                        i,
+                    )
+                    return
+                close_btn.click(
+                    delay=gaussian_random_delay(), timeout=5000
+                )
+                # Settle window for the dialog's leave animation
+                # before we probe again on the next iteration.
+                page.wait_for_timeout(500)
+            except BrowserError as e:
+                log.warning(
+                    "[popup-stack:%s] iter %d failed: %s",
+                    label,
+                    i,
+                    e,
+                )
+                return
+        log.info(
+            "[popup-stack:%s] hit max_iterations=%d; leaving any "
+            "remaining popup",
+            label,
+            max_iterations,
+        )
+
+    return dismiss_popup_stack
 
 
 def make_handle_google_one_tap_popup(
@@ -692,6 +883,13 @@ def make_modal_tab_button(
     btn_selector="button.justify-center:nth-child(4)",
     # close modal selector
     close_btn_selector='button[data-testid="modal-close"]',
+    # How long to wait for ``btn_selector`` to become clickable after
+    # the modal-open click. Most flows have the claim button visible
+    # within a second; the default 5000ms covers UI animation slack.
+    # Override for flows where the claim CTA only renders after a
+    # multi-second animation — e.g. PulszBingo's "Wheel of Winners",
+    # which spins for ~6-8s before "GET MY COINS" appears.
+    btn_visibility_timeout_ms: int = 5000,
 ) -> Callable[[Page], None]:
     """Generator for claiming daily bonus via modal, tab, button pattern.
     Args:
@@ -701,15 +899,19 @@ def make_modal_tab_button(
             opens directly on the daily-bonus view.
         btn_selector (str): Selector for the claim button.
         close_btn_selector (str): Selector for the modal close button.
+        btn_visibility_timeout_ms (int): Wait budget for ``btn_selector``
+            to become clickable. Bump for flows where the CTA is gated
+            on a multi-second animation.
     Returns:
         Callable[[Page], None]: A function that performs the daily bonus claim action on the given page.
     """
     log.debug(
-        "selectors: %s, %s, %s, %s",
+        "selectors: %s, %s, %s, %s (btn_timeout=%dms)",
         modal_selector,
         tab_selector,
         btn_selector,
         close_btn_selector,
+        btn_visibility_timeout_ms,
     )
 
     def claim_daily_bonus(page: Page) -> None:
@@ -720,6 +922,32 @@ def make_modal_tab_button(
         Returns:
         """
 
+        # Pre-check: if the trigger modal/element isn't visible, the
+        # daily bonus is already claimed for today. Most sites suppress
+        # the trigger (Modo's Daily Bonus card flips text to "Next:
+        # <countdown>"; PulszBingo's Wheel of Winners modal stops
+        # auto-popping). Treat a *timeout* (selector never appeared)
+        # as a normal "already claimed" path. Other ``BrowserError``s
+        # (navigation crashes, protocol errors, invalid selectors)
+        # surface as warnings and fall through so the subsequent click
+        # exposes the real failure rather than masking it as
+        # ``already_claimed``. The timeout matches the click below so
+        # a slow-rendering UI doesn't get misclassified.
+        try:
+            page.locator(modal_selector).first.wait_for(
+                state="visible", timeout=5000
+            )
+        except BrowserTimeoutError:
+            log.info("Daily bonus already claimed.")
+            return
+        except BrowserError as e:
+            log.warning(
+                "Unexpected error while pre-checking daily bonus modal "
+                "visibility (%s) — proceeding to click and letting any "
+                "real failure surface there.",
+                e,
+            )
+
         try:
             page.click(modal_selector, delay=gaussian_random_delay(), timeout=5000)
             if tab_selector:
@@ -728,7 +956,10 @@ def make_modal_tab_button(
             if claim_btn.is_disabled():
                 log.info("Daily bonus already claimed.")
             else:
-                claim_btn.click(delay=gaussian_random_delay(), timeout=5000)
+                claim_btn.click(
+                    delay=gaussian_random_delay(),
+                    timeout=btn_visibility_timeout_ms,
+                )
                 wait_for_load_all_safe(page, timeout=3000)
                 # Canonical success line for runner.parse_outcome — every
                 # claim factory should emit some form of "Daily bonus
@@ -1124,9 +1355,9 @@ def wait_for_turnstile(
         return False
 
 
-def google_oauth_login_page_make() -> Tuple[
-    Callable[[Page], None], Callable[[], bool]
-]:
+def google_oauth_login_page_make(
+    button_selectors: Optional[Tuple[str, ...]] = None,
+) -> Tuple[Callable[[Page], None], Callable[[], bool]]:
     """Create a Google OAuth login page action.
 
     The returned action clicks a "Sign in with Google" button on the current
@@ -1135,6 +1366,16 @@ def google_oauth_login_page_make() -> Tuple[
     redirect happens (the Google session is already established via
     ``user_data_dir``), the action returns early and the OAuth flow
     completes silently.
+
+    Args:
+        button_selectors: Optional per-site override for the Google
+            sign-in button candidates. When ``None`` (the default), the
+            framework's ``_GENERIC_GOOGLE_OAUTH_BUTTON`` list is used.
+            Override when a site's login page exposes multiple SSO
+            buttons (Google, Facebook, Apple, etc.) and the generic
+            class-based candidates would match the wrong one — e.g.
+            Pulsz, where ``button.sso-button`` lands on Facebook
+            because it appears before Google in DOM order.
 
     Returns:
         tuple[Callable[[Page], None], Callable[[], bool]]: A tuple of
@@ -1258,7 +1499,7 @@ def google_oauth_login_page_make() -> Tuple[
         # clicking before the widget goes green triggers a hard reject.
         wait_for_turnstile(page, timeout=30000)
 
-        google_button_selectors = _GENERIC_GOOGLE_OAUTH_BUTTON
+        google_button_selectors = button_selectors or _GENERIC_GOOGLE_OAUTH_BUTTON
 
         # Watch for a popup opened by the click. ``expect_page`` races the
         # click against a new-page event in the same browser context.
@@ -1406,7 +1647,7 @@ def make_generic_accept_or_close_modals(
         try:
             # Find the claim buttons that are not disabled
             enabled_buttons: Locator = page.locator(main_enabled_selector)
-            close_buttons: Locator = page.locator(close_modal_selector)
+            # close_buttons: Locator = page.locator(close_modal_selector)
 
             for attempt in range(
                 1, 11
@@ -1913,6 +2154,13 @@ class LoginConfig:
     pre_login_click_selector: Optional[str] = None
     pre_login_callback: Optional[Callable[[Page], None]] = None
     post_login_callback: Optional[Callable[[Page], None]] = None
+    # Per-site override for the Google "Sign in with Google" button
+    # candidates. ``None`` falls back to the generic
+    # ``_GENERIC_GOOGLE_OAUTH_BUTTON`` list. Set this when a site's
+    # login page has multiple SSO buttons and the generic class-based
+    # candidates (e.g. ``button.sso-button``) would land on the wrong
+    # one — Pulsz being the canonical example.
+    google_oauth_btn_selectors: Optional[Tuple[str, ...]] = None
 
 
 @dataclass
@@ -1926,6 +2174,11 @@ class MTBClaimConfig:
     # whose claim modal opens directly to the daily-bonus view (e.g.
     # YayCasino's coin-store modal has no tab switcher).
     tab_selector: Optional[str] = None
+    # Wait budget for ``btn_selector`` to become clickable after the
+    # modal-open click. Default covers UI animation slack; bump for
+    # flows where the CTA only appears after a multi-second animation
+    # (PulszBingo's wheel spins ~6-8s before "GET MY COINS" renders).
+    btn_visibility_timeout_ms: int = 5000
 
 
 @dataclass
