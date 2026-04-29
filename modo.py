@@ -93,11 +93,16 @@ from scrapling_ext import make_casino_automation
 # login (the coin store first, then "Claim your offer!", and
 # possibly more over time). They all use the standard MUI close
 # icon button at ``button[aria-label="close"]``, so a single
-# dismiss-loop walks the stack cleanly.
+# dismiss-loop walks the stack cleanly. The offer modals can
+# lazy-render a second or two after login completes, so we hand
+# the loop a 3s grace period before treating "no popup" as done —
+# otherwise a late-arriving offer slips past the dismiss callback
+# and sits up over the lobby for the rest of the run.
 _dismiss_modo_popups = make_dismiss_popup_stack(
     modal_selector='.MuiDialog-root:not([aria-hidden="true"])',
     close_selector='.MuiDialog-root:not([aria-hidden="true"]) button[aria-label="close"]',
     name="Modo.post-login-stack",
+    initial_wait_ms=3000,
 )
 
 
