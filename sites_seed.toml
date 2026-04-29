@@ -100,14 +100,18 @@ id = "real_prize"
 name = "Real Prize Casino"
 url = "https://realprize.com"
 affiliate_link = "https://realprize.com/"
-status = "juicy"
+status = "working"
+auth = "form"
+module = "realprize"
 
 [[site]]
 id = "yay_casino"
 name = "YayCasino"
 url = "https://yaycasino.com"
 affiliate_link = "https://www.yaycasino.com/signup/74ffb2ba-4661-49e6-928a-eabf5ce39d8c"
-status = "juicy"
+status = "working"
+auth = "form"
+module = "yaycasino"
 
 [[site]]
 id = "yay_casino_us"
