@@ -143,15 +143,19 @@ def create_realprize_config() -> CasinoConfig:
             currency_toggle_switch_selector=None,
         ),
 
-        # Daily-claim flow not yet mapped. The lobby has no obvious
-        # Daily Bonus / Collect / Free Coins CTA, and clicking the
-        # coinswitcher opens the coin store rather than a daily
-        # ritual. Stubbing with a placeholder selector so the
-        # framework registers the claim attempt as ``not visible``
-        # rather than throwing — runner reports ``already_claimed``
-        # / ``unknown`` until the real flow is identified.
+        # Daily claim is a ``.daily_prize_popup`` that auto-shows
+        # once after each fresh login — a 7-day streak grid where
+        # today's tile carries an active ``div#daily_button``
+        # rendering the text "COLLECT" (past days render the same
+        # element with text "COLLECTED" — same id, so we filter
+        # by exact text). If you miss it (close it, navigate away
+        # without clicking COLLECT), the popup is gone for the
+        # session and you have to log out + back in. On
+        # already-claimed days the active tile flips to "COLLECTED"
+        # and the ``text-is("COLLECT")`` selector finds nothing,
+        # which the runner registers as ``already_claimed``.
         claim_config=SimpleClaimConfig(
-            btn_selector='button:has-text("Claim Daily"), button:has-text("Collect Daily")',
+            btn_selector='div.daily_button:text-is("COLLECT")',
         ),
         claim_pattern="simple",
 

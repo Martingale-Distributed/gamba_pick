@@ -93,7 +93,9 @@ id = "lonestar_casino"
 name = "LoneStar Casino"
 url = "https://www.lonestarcasino.com"
 affiliate_link = "https://lonestarcasino.com/refer/806835"
-status = "juicy"
+status = "working"
+auth = "form"
+module = "lonestarcasino"
 
 [[site]]
 id = "real_prize"
