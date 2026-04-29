@@ -9,10 +9,13 @@ sister site of Pulsz — same React + CSS-modules frontend, same operator,
 
 Daily-claim mechanic differs from Pulsz, though: where Pulsz uses a
 7-day streak modal with a "GET FREE COINS" CTA, Pulsz Bingo's lobby
-ships a ``[data-test="wheel-of-winners-daily-reward"]`` widget — a
-prize wheel rather than a streak grid. The exact click flow on the
-wheel hasn't been fully mapped yet; the claim selector below is a
-best-effort that the runtime log will validate.
+ships a "Wheel of Winners" prize wheel inside ``[data-test="common-
+modal"]``. The wheel canvas is wrapped in a div carrying
+``[data-test="wheel-of-winners-daily-reward"]`` — clicking it spins
+the wheel (~6-8 second animation). After the wheel settles, a
+``GET MY COINS`` ``MuiButton`` appears to collect the prize.
+A coin-store upsell auto-pops in the same modal slot afterward; the
+standard ``button[aria-label="back button"]`` close icon dismisses it.
 
 Auth path: Google OAuth (same as Pulsz). First-time setup:
 
@@ -33,7 +36,7 @@ from casino import (
     Currency,
     CurrencyDisplayConfig,
     LoginConfig,
-    SimpleClaimConfig,
+    MTBClaimConfig,
     get_arg_parser,
 )
 from scrapling_ext import make_casino_automation
@@ -83,19 +86,30 @@ def create_pulszbingo_config() -> CasinoConfig:
             currency_toggle_switch_selector=None,
         ),
 
-        # Daily-claim flow is wheel-based — Pulsz Bingo ships a
-        # ``[data-test="wheel-of-winners-daily-reward"]`` widget on
-        # the lobby instead of Pulsz's streak modal. The exact click
-        # path through the wheel (spin → result → collect) hasn't
-        # been mapped yet; placeholder selector targets the wheel
-        # widget itself, which lets the framework log "claim button
-        # not visible" cleanly when the wheel doesn't surface a
-        # clickable claim CTA. Will be refined once the live flow
-        # is observed.
-        claim_config=SimpleClaimConfig(
-            btn_selector='[data-test="wheel-of-winners-daily-reward"] button',
+        # MTB chain (verified live):
+        #   1. modal_selector → click the wheel wrapper inside the
+        #      auto-popped Wheel of Winners modal. The wheel itself
+        #      is rendered to a ``<canvas>``; the wrapper div carries
+        #      the ``data-test`` hook and is the click target. This
+        #      kicks off a ~6-8 second spin animation.
+        #   2. (no tab_selector — modal opens directly to the wheel.)
+        #   3. btn_selector → "GET MY COINS" button that appears
+        #      inside the modal once the wheel settles. Scoped to
+        #      ``common-modal`` so the framework's pre-check for
+        #      modal_selector visibility is what gates "already
+        #      claimed". ``btn_visibility_timeout_ms`` is bumped
+        #      because the spin animation is the gating delay.
+        #   4. close_btn_selector → after collect, the same modal
+        #      slot is replaced with a coin-store upsell. The
+        #      standard MUI-style back/close icon dismisses it.
+        claim_config=MTBClaimConfig(
+            modal_selector='[data-test="common-modal"] [data-test="wheel-of-winners-daily-reward"]',
+            tab_selector=None,
+            btn_selector='[data-test="common-modal"] button:has-text("GET MY COINS")',
+            close_btn_selector='[data-test="common-modal"] button[aria-label="back button"]',
+            btn_visibility_timeout_ms=12000,
         ),
-        claim_pattern="simple",
+        claim_pattern="mtb",
 
         requires_2fa=False,
         geoip=False,

@@ -34,10 +34,13 @@ Daily claim
 -----------
 Pulsz auto-shows a 7-day streak modal (``[data-test="common-modal"]``)
 on each login. Today's tile carries a ``GET FREE COINS`` button —
-clicking claims today's reward. If you miss it (close, navigate
-away), the modal is gone for the session and the script will report
-``already_claimed`` next run since the button isn't visible. On
-already-claimed days the modal still shows but its CTA is gone.
+clicking claims today's reward. After collect, the same modal slot
+is replaced with a coin-store upsell ("BUY NOW $X.XX") which we
+dismiss via the standard ``button[aria-label="back button"]`` close
+icon. If today's bonus has already been claimed, the streak modal
+doesn't auto-pop on subsequent logins — only the upsell appears —
+and the framework cleanly reports ``already_claimed`` since the
+``GET FREE COINS`` button isn't visible.
 """
 
 from casino import (
@@ -113,11 +116,17 @@ def create_pulsz_config() -> CasinoConfig:
         # ``[data-test="common-modal"]`` on each fresh login. Today's
         # tile carries a "GET FREE COINS" button — click that and
         # we're done. Scoped to the modal so an unrelated page button
-        # wouldn't accidentally match. Past days show the same modal
-        # without the CTA, so on already-claimed days the selector
-        # finds nothing and the runner registers ``already_claimed``.
+        # wouldn't accidentally match. Once today is claimed, the
+        # streak modal stops auto-popping (only the coin-store upsell
+        # shows) so the selector finds nothing and the runner
+        # registers ``already_claimed``.
+        #
+        # ``post_claim_close_selector`` dismisses the upsell that
+        # auto-pops in the same modal slot right after collect — keeps
+        # the lobby DOM clean for any teardown work.
         claim_config=SimpleClaimConfig(
             btn_selector='[data-test="common-modal"] button:has-text("GET FREE COINS")',
+            post_claim_close_selector='[data-test="common-modal"] button[aria-label="back button"]',
         ),
         claim_pattern="simple",
 

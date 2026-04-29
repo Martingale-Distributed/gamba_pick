@@ -790,6 +790,13 @@ def make_modal_tab_button(
     btn_selector="button.justify-center:nth-child(4)",
     # close modal selector
     close_btn_selector='button[data-testid="modal-close"]',
+    # How long to wait for ``btn_selector`` to become clickable after
+    # the modal-open click. Most flows have the claim button visible
+    # within a second; the default 5000ms covers UI animation slack.
+    # Override for flows where the claim CTA only renders after a
+    # multi-second animation — e.g. PulszBingo's "Wheel of Winners",
+    # which spins for ~6-8s before "GET MY COINS" appears.
+    btn_visibility_timeout_ms: int = 5000,
 ) -> Callable[[Page], None]:
     """Generator for claiming daily bonus via modal, tab, button pattern.
     Args:
@@ -799,15 +806,19 @@ def make_modal_tab_button(
             opens directly on the daily-bonus view.
         btn_selector (str): Selector for the claim button.
         close_btn_selector (str): Selector for the modal close button.
+        btn_visibility_timeout_ms (int): Wait budget for ``btn_selector``
+            to become clickable. Bump for flows where the CTA is gated
+            on a multi-second animation.
     Returns:
         Callable[[Page], None]: A function that performs the daily bonus claim action on the given page.
     """
     log.debug(
-        "selectors: %s, %s, %s, %s",
+        "selectors: %s, %s, %s, %s (btn_timeout=%dms)",
         modal_selector,
         tab_selector,
         btn_selector,
         close_btn_selector,
+        btn_visibility_timeout_ms,
     )
 
     def claim_daily_bonus(page: Page) -> None:
@@ -818,6 +829,20 @@ def make_modal_tab_button(
         Returns:
         """
 
+        # Pre-check: if the trigger modal/element isn't visible, the
+        # daily bonus is already claimed for today. Most sites suppress
+        # the trigger (Modo's Daily Bonus card flips text to "Next:
+        # <countdown>"; PulszBingo's Wheel of Winners modal stops
+        # auto-popping). Treat that as a normal "already claimed" path
+        # rather than letting the click time out into an ERROR log.
+        try:
+            page.locator(modal_selector).first.wait_for(
+                state="visible", timeout=2000
+            )
+        except BrowserError:
+            log.info("Daily bonus already claimed.")
+            return
+
         try:
             page.click(modal_selector, delay=gaussian_random_delay(), timeout=5000)
             if tab_selector:
@@ -826,7 +851,10 @@ def make_modal_tab_button(
             if claim_btn.is_disabled():
                 log.info("Daily bonus already claimed.")
             else:
-                claim_btn.click(delay=gaussian_random_delay(), timeout=5000)
+                claim_btn.click(
+                    delay=gaussian_random_delay(),
+                    timeout=btn_visibility_timeout_ms,
+                )
                 wait_for_load_all_safe(page, timeout=3000)
                 # Canonical success line for runner.parse_outcome — every
                 # claim factory should emit some form of "Daily bonus
@@ -2041,6 +2069,11 @@ class MTBClaimConfig:
     # whose claim modal opens directly to the daily-bonus view (e.g.
     # YayCasino's coin-store modal has no tab switcher).
     tab_selector: Optional[str] = None
+    # Wait budget for ``btn_selector`` to become clickable after the
+    # modal-open click. Default covers UI animation slack; bump for
+    # flows where the CTA only appears after a multi-second animation
+    # (PulszBingo's wheel spins ~6-8s before "GET MY COINS" renders).
+    btn_visibility_timeout_ms: int = 5000
 
 
 @dataclass

@@ -32,25 +32,41 @@ letters / commas / whitespace cleanly.
 
 Daily-claim flow
 ----------------
-Modo has multiple daily features. The simple-claim flow we target
-is the **Daily Bonus** card in the left side panel: a
+Modo has multiple daily features. The flow we automate is the
+side-panel **Daily Bonus** card — a
 ``button.MuiCardActionArea-root`` whose text reads
-``"Daily Bonus  Claim now! Ready! 1 day"`` while the bonus is
-available. Clicking it surfaces a modal that closes via the same
-``button[aria-label="close"]`` pattern as the other Modo popups —
-the ``post_login_callback`` popup-stack dismissal will sweep that
-up too on the *next* run if it lingers; for the same-run case the
-runner registers ``claimed`` once the click succeeds.
+``"Daily Bonus  Claim now! Ready! N day"`` while the bonus is
+available, with an attached 100% MUI linear progress bar.
+Clicking the card opens a streak-grid modal titled
+``"Get your Daily Bonus!"`` (NOT the same as the auto-popup
+``"Claim your offer!"`` upsell — different modals). The actual
+claim button lives *inside* the streak modal as a
+``MuiButton-containedPrimary`` whose text matches
+``Claim ... Daily Bonus!`` (note: the rendered string has a
+zero-width space, so we use ``:text-matches`` rather than a
+literal ``:has-text``).
+
+So the claim is an MTB chain:
+
+  1. ``modal_selector`` clicks the Daily Bonus card → opens the
+     streak modal.
+  2. ``btn_selector`` clicks the Claim Daily Bonus button inside
+     → claims today's tile.
+  3. ``close_btn_selector`` is the standard MUI
+     ``button[aria-label="close"]``.
+
+There's no tab switcher, so ``tab_selector`` is left ``None``.
 
 Other Modo daily features (Daily Challenge / Daily Lucky Blast /
-Modo Daily Hunt) are spin-the-wheel-style minigames or quest
-timers — out of scope for the simple-claim flow.
+Modo Daily Hunt) are minigames or quest timers — out of scope
+for this flow.
 
 The popup-stack dismissal in ``post_login_callback`` is critical
-not just for SC reading: Modo's ``MuiDialog-root`` overlays
-interfere with the lobby DOM badly when left up, blocking clicks
-on the side-panel Daily Bonus card. With them cleared the lobby
-renders cleanly.
+both for balance reading and for the claim: Modo's
+``MuiDialog-root`` overlays interfere with the lobby DOM badly
+when left up, blocking clicks on the side-panel Daily Bonus card
+*and* preventing the click-to-toggle currency switch from
+working. With them cleared the lobby renders cleanly.
 """
 
 from typing import Dict
@@ -64,7 +80,7 @@ from casino import (
     Currency,
     CurrencyDisplayConfig,
     LoginConfig,
-    SimpleClaimConfig,
+    MTBClaimConfig,
     gaussian_random_delay,
     get_arg_parser,
     log,
@@ -195,20 +211,27 @@ def create_modo_config() -> CasinoConfig:
         ),
         custom_balance_parser=read_modo_balances,
 
-        # Daily Bonus card in the left side panel. While the bonus
-        # is ready the button text reads "Daily Bonus  Claim now!
-        # Ready! ..." — once claimed it switches to a "Next:
-        # <countdown>" form that no longer contains "Claim now",
-        # so the ``:has-text("Claim now")`` filter naturally
-        # registers as ``already_claimed`` after a successful run.
-        # ``MuiCardActionArea-root`` is Material-UI's stable
-        # clickable-card class (the accompanying ``css-*`` emotion
-        # class re-hashes per build and is deliberately not
-        # targeted).
-        claim_config=SimpleClaimConfig(
-            btn_selector='button.MuiCardActionArea-root:has-text("Daily Bonus"):has-text("Claim now")',
+        # MTB chain (verified live):
+        #   1. modal_selector → side-panel Daily Bonus card; opens
+        #      the streak modal "Get your Daily Bonus!". Filtered
+        #      by "Claim now" so the selector misses cleanly on
+        #      already-claimed days when the card text flips to
+        #      "Next: <countdown>".
+        #   2. (no tab_selector — modal opens directly on the
+        #      claim view).
+        #   3. btn_selector → the "Claim ... Daily Bonus!" button
+        #      inside the modal. Uses ``:text-matches`` because
+        #      the rendered string contains a zero-width space
+        #      between "y" and "our" that defeats a literal
+        #      ``:has-text("Claim your Daily Bonus")``.
+        #   4. close_btn_selector → standard MUI close icon.
+        claim_config=MTBClaimConfig(
+            modal_selector='button.MuiCardActionArea-root:has-text("Daily Bonus"):has-text("Claim now")',
+            tab_selector=None,
+            btn_selector='.MuiDialog-root:not([aria-hidden="true"]) button.MuiButton-containedPrimary:text-matches("Claim.*Daily Bonus")',
+            close_btn_selector='.MuiDialog-root:not([aria-hidden="true"]) button[aria-label="close"]',
         ),
-        claim_pattern="simple",
+        claim_pattern="mtb",
 
         requires_2fa=False,
         geoip=False,
