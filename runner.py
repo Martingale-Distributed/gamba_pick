@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -232,7 +233,20 @@ def run_site(site: Site, opts: argparse.Namespace) -> RunResult:
     for a daily cron, not so much for high-frequency runs.
     """
     assert site.module, f"site {site.id} has no module"
-    cmd = [sys.executable, f"{site.module}.py"]
+    # ``--config-dir`` lets the runner load site modules from outside
+    # the in-tree set (e.g. the Casino Buddy commercial bundle, where
+    # the closed catalog lives in a private repo / decrypted bundle
+    # rather than alongside ``casino.py``). When the script is invoked
+    # by absolute path, Python's ``sys.path[0]`` is the *script's*
+    # directory — not ``cwd`` — so a bare ``from casino import ...`` in
+    # an external module wouldn't resolve. We keep ``cwd=ROOT`` (so
+    # relative paths like ``profiles/<site>`` still work) and inject
+    # ROOT into the child's ``PYTHONPATH`` so framework imports land.
+    if opts.config_dir:
+        module_path = (opts.config_dir / f"{site.module}.py").resolve()
+    else:
+        module_path = ROOT / f"{site.module}.py"
+    cmd = [sys.executable, str(module_path)]
     if site.auth == "oauth":
         cmd.append("--google-oauth")
     # ``form`` auth: nothing extra on the CLI; the site script reads
@@ -244,6 +258,16 @@ def run_site(site: Site, opts: argparse.Namespace) -> RunResult:
 
     timeout_s = site.timeout_s if site.timeout_s is not None else opts.timeout_per_site
 
+    # Prepend ROOT to PYTHONPATH so external site modules (loaded via
+    # ``--config-dir``) can import the framework. Inheriting the rest
+    # of the env keeps anything else the child relies on (HOME, USER,
+    # PATH, the venv's PATH side effects).
+    child_env = dict(os.environ)
+    existing_pp = child_env.get("PYTHONPATH", "")
+    child_env["PYTHONPATH"] = (
+        f"{ROOT}{os.pathsep}{existing_pp}" if existing_pp else str(ROOT)
+    )
+
     start = time.monotonic()
     timed_out = False
     stdout = ""
@@ -253,6 +277,7 @@ def run_site(site: Site, opts: argparse.Namespace) -> RunResult:
         result = subprocess.run(
             cmd,
             cwd=ROOT,
+            env=child_env,
             capture_output=True,
             text=True,
             timeout=timeout_s,
@@ -378,6 +403,20 @@ def main() -> int:
         default=SEED_FILE,
         help="Sites seed TOML.",
     )
+    parser.add_argument(
+        "--config-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Directory holding additional site modules (e.g. the "
+            "Casino Buddy commercial catalog at ``./configs/``). When "
+            "set, ``<config_dir>/<module>.py`` is used as the site "
+            "script path; pair with ``--seed-file`` pointing at a "
+            "TOML that lists those modules so the runner picks them "
+            "up. Without this flag the runner only sees the in-tree "
+            "open-source reference configs."
+        ),
+    )
     opts = parser.parse_args()
 
     all_sites = load_sites(opts.seed_file)
@@ -392,15 +431,34 @@ def main() -> int:
         skip = _expand_id_args(opts.skip)
         sites = [s for s in sites if s.id not in skip]
 
+    # When ``--config-dir`` is set we expect the site modules to live
+    # there; warn early on any seed entry whose module file is missing
+    # from the resolved path. Same check for the in-tree default —
+    # catches the "I removed a .py without updating the seed" mistake
+    # early instead of letting it surface as a subprocess no-op.
+    module_root = opts.config_dir if opts.config_dir else ROOT
+    valid: List[Site] = []
+    for s in sites:
+        module_path = (module_root / f"{s.module}.py").resolve()
+        if not module_path.exists():
+            print(
+                f"warn: site '{s.id}' module {s.module}.py not found at "
+                f"{module_path} — skipping."
+            )
+            continue
+        valid.append(s)
+    sites = valid
+
     if not sites:
         print("No sites match the filters; nothing to do.")
         return 1
 
+    location_note = f", configs from {opts.config_dir}" if opts.config_dir else ""
     print(
         f"Plan: {len(sites)} site(s) sequentially, "
         f"default timeout {opts.timeout_per_site}s, "
         f"{'headless' if opts.headless else 'visible'}, "
-        f"{'no-claim' if opts.skip_claim else 'with-claim'}:"
+        f"{'no-claim' if opts.skip_claim else 'with-claim'}{location_note}:"
     )
     for s in sites:
         timeout_note = f"  [timeout {s.timeout_s}s]" if s.timeout_s is not None else ""

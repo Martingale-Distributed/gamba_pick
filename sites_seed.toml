@@ -8,16 +8,22 @@
 # their own .py files at the top level of this repo.
 #
 # status:
-#   working  — Python module exists in this repo and runs end-to-end
-#              (login, balance read, daily-claim attempt, clean exit).
-#   juicy    — priority site to add next. Mix of operators (e.g.
-#              RealPlay's RealPrize/LoneStar; YayCasino TBD); whether
-#              the SLNGApp-platform selectors apply needs to be
-#              checked per site by inspecting the /login redirect's
-#              client_id.
-#   surveyed — in the master list, no module yet, no priority assigned.
-#   unknown  — site exists but its claim flow hasn't been mapped (the
-#              old project carried these as ``manual_input`` stubs).
+#   working    — Python module exists in this repo and runs end-to-end
+#                (login, balance read, daily-claim attempt, clean exit).
+#   commercial — Working module exists, but as part of the Casino Buddy
+#                commercial catalog rather than this open-source repo.
+#                Listed here for visibility into what's covered; the
+#                runner ignores ``commercial`` entries unless pointed
+#                at the bundled catalog with ``--config-dir`` /
+#                ``--seed-file``.
+#   juicy      — priority site to add next. Mix of operators (e.g.
+#                RealPlay's RealPrize/LoneStar; YayCasino TBD); whether
+#                the SLNGApp-platform selectors apply needs to be
+#                checked per site by inspecting the /login redirect's
+#                client_id.
+#   surveyed   — in the master list, no module yet, no priority assigned.
+#   unknown    — site exists but its claim flow hasn't been mapped (the
+#                old project carried these as ``manual_input`` stubs).
 #
 # auth (only meaningful when status="working"):
 #   oauth — site uses Google OAuth; runner passes --google-oauth.
@@ -59,23 +65,14 @@ id = "zula_casino"
 name = "Zula Casino"
 url = "https://zulacasino.com"
 affiliate_link = "https://www.zulacasino.com/signup/b6cf5ee8-3374-4f86-9ee0-8d42e1a9e914"
-status = "working"
-auth = "oauth"
-module = "zulacasino"
-# Zula's teardown predictably hangs in scrapling's _process_response_history
-# (Camoufox + redirect chain). Work itself completes by ~30s; tighten the
-# timeout so the runner SIGKILLs the stuck cleanup loop quickly instead
-# of waiting out the 300s default. Remove once scrapling is vendor-patched.
-timeout_s = 90
+status = "commercial"
 
 [[site]]
 id = "sportzino"
 name = "Sportzino"
 url = "https://sportzino.com"
 affiliate_link = "https://sportzino.com/signup/58fa86ad-5f1c-49cc-9d13-26d1aa803f49"
-status = "working"
-auth = "oauth"
-module = "sportzino"
+status = "commercial"
 
 [[site]]
 id = "fortune_wins"
@@ -84,36 +81,28 @@ name = "Fortune Wins Casino"
 # old project's master list).
 url = "https://fortunewins.com"
 affiliate_link = "https://www.fortunecoins.com/signup/adf122b4-d830-4479-ba4b-6ebee4d51f75"
-status = "working"
-auth = "form"
-module = "fortunewins"
+status = "commercial"
 
 [[site]]
 id = "lonestar_casino"
 name = "LoneStar Casino"
 url = "https://www.lonestarcasino.com"
 affiliate_link = "https://lonestarcasino.com/refer/806835"
-status = "working"
-auth = "form"
-module = "lonestarcasino"
+status = "commercial"
 
 [[site]]
 id = "real_prize"
 name = "Real Prize Casino"
 url = "https://realprize.com"
 affiliate_link = "https://realprize.com/"
-status = "working"
-auth = "form"
-module = "realprize"
+status = "commercial"
 
 [[site]]
 id = "yay_casino"
 name = "YayCasino"
 url = "https://yaycasino.com"
 affiliate_link = "https://www.yaycasino.com/signup/74ffb2ba-4661-49e6-928a-eabf5ce39d8c"
-status = "working"
-auth = "form"
-module = "yaycasino"
+status = "commercial"
 
 [[site]]
 id = "yay_casino_us"
@@ -189,9 +178,7 @@ id = "modo"
 name = "Modo US"
 url = "https://modo.us"
 affiliate_link = "https://modo.us?referralCode=84ARNE"
-status = "working"
-auth = "oauth"
-module = "modo"
+status = "commercial"
 
 [[site]]
 id = "playfame"
@@ -205,18 +192,14 @@ id = "pulsz"
 name = "Pulsz Casino"
 url = "https://www.pulsz.com"
 affiliate_link = "https://www.pulsz.com/?invited_by=mhmmwz"
-status = "working"
-auth = "oauth"
-module = "pulsz"
+status = "commercial"
 
 [[site]]
 id = "pulszbingo"
 name = "Pulsz Bingo Casino"
 url = "https://www.pulszbingo.com"
 affiliate_link = "https://www.pulszbingo.com/?invited_by=aubxn2"
-status = "working"
-auth = "oauth"
-module = "pulszbingo"
+status = "commercial"
 
 [[site]]
 id = "rolling_riches"
