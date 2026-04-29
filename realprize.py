@@ -23,9 +23,14 @@ Login flow (verified via DOM probe at https://realprize.com):
   5. Fill ``#poplogin_email`` + ``#poplogin_password`` and submit
      via ``#poploginbtn`` (text "LOGIN", class ``reg-default-btn``).
 
-Currency display + daily-claim flow are TBD — RealPrize's
-authenticated lobby hasn't been probed yet. First-run output and
-follow-up DOM inspection will fill those in.
+Currency display reads ``#coinswitch span.gct`` (the active
+currency, visible) and ``#coinswitch span.gcc`` (the inactive
+currency — visually hidden but its ``textContent`` is still in the
+DOM, so the framework's currency-letter-stripping clean step picks
+the value out). Daily claim is a 7-day streak grid in
+``.daily_prize_popup`` that auto-shows after each fresh login;
+clicking the visible ``div.daily_button`` carrying exact text
+"COLLECT" claims today's tile.
 
 First-time setup:
 
@@ -44,7 +49,6 @@ from casino import (
     CurrencyDisplayConfig,
     LoginConfig,
     SimpleClaimConfig,
-    gaussian_random_delay,
     get_arg_parser,
     log,
 )
@@ -145,15 +149,14 @@ def create_realprize_config() -> CasinoConfig:
 
         # Daily claim is a ``.daily_prize_popup`` that auto-shows
         # once after each fresh login — a 7-day streak grid where
-        # today's tile carries an active ``div#daily_button``
-        # rendering the text "COLLECT" (past days render the same
-        # element with text "COLLECTED" — same id, so we filter
-        # by exact text). If you miss it (close it, navigate away
-        # without clicking COLLECT), the popup is gone for the
-        # session and you have to log out + back in. On
-        # already-claimed days the active tile flips to "COLLECTED"
-        # and the ``text-is("COLLECT")`` selector finds nothing,
-        # which the runner registers as ``already_claimed``.
+        # each day-tile renders a ``div.daily_button`` control.
+        # Today's tile carries the text "COLLECT"; past days carry
+        # "COLLECTED" — exact-text match picks the right one. If
+        # you miss the popup (close it, navigate away without
+        # clicking COLLECT), it's gone for the session and you
+        # have to log out + back in. On already-claimed days no
+        # tile renders "COLLECT" and the runner registers
+        # ``already_claimed``.
         claim_config=SimpleClaimConfig(
             btn_selector='div.daily_button:text-is("COLLECT")',
         ),

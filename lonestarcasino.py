@@ -133,10 +133,10 @@ def create_lonestarcasino_config() -> CasinoConfig:
         ),
 
         # Same ``.daily_prize_popup`` grid pattern as RealPrize. The
-        # 7-day streak grid stamps the same ``div#daily_button``
-        # element on every day-tile (duplicate IDs are fine for
-        # CSS); today's tile carries text "COLLECT", past days
-        # carry "COLLECTED" — exact-text match picks the right one.
+        # 7-day streak grid renders a ``div.daily_button`` element
+        # on each day-tile; today's tile carries text "COLLECT",
+        # past days carry "COLLECTED" — exact-text match picks the
+        # right one.
         claim_config=SimpleClaimConfig(
             btn_selector='div.daily_button:text-is("COLLECT")',
         ),
