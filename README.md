@@ -78,7 +78,7 @@ Pre-1.0. Patch = config-only additions; minor = framework / runner / public-conf
 
 ## License
 
-[License TBD — likely permissive (MIT/Apache-2.0). Final decision before 1.0.]
+[License GPL-3.0-or-later]
 
 ## Disclaimer
 
