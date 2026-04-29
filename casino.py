@@ -684,8 +684,10 @@ def wait_for_load_all_safe(
 def make_modal_tab_button(
     # modal selector, usually wallet button
     modal_selector='button[data-testid="wallet"], button[data-analytics="global-navbar-wallet-button"]',
-    # tab selector, usually daily bonus button
-    tab_selector='button[data-testid="dailyBonus"]',
+    # tab selector, usually daily bonus button — Optional for sites
+    # whose claim modal opens directly to the daily-bonus view (e.g.
+    # YayCasino's coin-store modal that has no tabs).
+    tab_selector: Optional[str] = 'button[data-testid="dailyBonus"]',
     # button selector, usually claim button
     btn_selector="button.justify-center:nth-child(4)",
     # close modal selector
@@ -694,7 +696,9 @@ def make_modal_tab_button(
     """Generator for claiming daily bonus via modal, tab, button pattern.
     Args:
         modal_selector (str): Selector for the modal open button.
-        tab_selector (str): Selector for the tab button inside the modal.
+        tab_selector (Optional[str]): Selector for the tab button
+            inside the modal. ``None`` for sites whose claim modal
+            opens directly on the daily-bonus view.
         btn_selector (str): Selector for the claim button.
         close_btn_selector (str): Selector for the modal close button.
     Returns:
@@ -718,7 +722,8 @@ def make_modal_tab_button(
 
         try:
             page.click(modal_selector, delay=gaussian_random_delay(), timeout=5000)
-            page.click(tab_selector, delay=gaussian_random_delay(), timeout=5000)
+            if tab_selector:
+                page.click(tab_selector, delay=gaussian_random_delay(), timeout=5000)
             claim_btn = page.locator(btn_selector)
             if claim_btn.is_disabled():
                 log.info("Daily bonus already claimed.")
@@ -1915,9 +1920,12 @@ class MTBClaimConfig:
     """Configuration for Modal-Tab-Button claiming pattern."""
 
     modal_selector: str  # Button to open modal (e.g., wallet button)
-    tab_selector: str  # Tab inside modal (e.g., daily bonus tab)
     btn_selector: str  # Claim button
     close_btn_selector: str  # Modal close button
+    # Tab inside modal (e.g., daily bonus tab). ``None`` for sites
+    # whose claim modal opens directly to the daily-bonus view (e.g.
+    # YayCasino's coin-store modal has no tab switcher).
+    tab_selector: Optional[str] = None
 
 
 @dataclass
