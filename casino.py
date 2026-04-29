@@ -1124,9 +1124,9 @@ def wait_for_turnstile(
         return False
 
 
-def google_oauth_login_page_make() -> Tuple[
-    Callable[[Page], None], Callable[[], bool]
-]:
+def google_oauth_login_page_make(
+    button_selectors: Optional[Tuple[str, ...]] = None,
+) -> Tuple[Callable[[Page], None], Callable[[], bool]]:
     """Create a Google OAuth login page action.
 
     The returned action clicks a "Sign in with Google" button on the current
@@ -1135,6 +1135,16 @@ def google_oauth_login_page_make() -> Tuple[
     redirect happens (the Google session is already established via
     ``user_data_dir``), the action returns early and the OAuth flow
     completes silently.
+
+    Args:
+        button_selectors: Optional per-site override for the Google
+            sign-in button candidates. When ``None`` (the default), the
+            framework's ``_GENERIC_GOOGLE_OAUTH_BUTTON`` list is used.
+            Override when a site's login page exposes multiple SSO
+            buttons (Google, Facebook, Apple, etc.) and the generic
+            class-based candidates would match the wrong one — e.g.
+            Pulsz, where ``button.sso-button`` lands on Facebook
+            because it appears before Google in DOM order.
 
     Returns:
         tuple[Callable[[Page], None], Callable[[], bool]]: A tuple of
@@ -1258,7 +1268,7 @@ def google_oauth_login_page_make() -> Tuple[
         # clicking before the widget goes green triggers a hard reject.
         wait_for_turnstile(page, timeout=30000)
 
-        google_button_selectors = _GENERIC_GOOGLE_OAUTH_BUTTON
+        google_button_selectors = button_selectors or _GENERIC_GOOGLE_OAUTH_BUTTON
 
         # Watch for a popup opened by the click. ``expect_page`` races the
         # click against a new-page event in the same browser context.
@@ -1913,6 +1923,13 @@ class LoginConfig:
     pre_login_click_selector: Optional[str] = None
     pre_login_callback: Optional[Callable[[Page], None]] = None
     post_login_callback: Optional[Callable[[Page], None]] = None
+    # Per-site override for the Google "Sign in with Google" button
+    # candidates. ``None`` falls back to the generic
+    # ``_GENERIC_GOOGLE_OAUTH_BUTTON`` list. Set this when a site's
+    # login page has multiple SSO buttons and the generic class-based
+    # candidates (e.g. ``button.sso-button``) would land on the wrong
+    # one — Pulsz being the canonical example.
+    google_oauth_btn_selectors: Optional[Tuple[str, ...]] = None
 
 
 @dataclass

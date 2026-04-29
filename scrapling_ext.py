@@ -285,7 +285,9 @@ def make_casino_automation(
                     user_data_dir,
                 )
         elif google_oauth:
-            oauth_login, _ = google_oauth_login_page_make()
+            oauth_login, _ = google_oauth_login_page_make(
+                button_selectors=config.login.google_oauth_btn_selectors,
+            )
 
             def login_action(page: Page) -> None:
                 if pre_login is not None:
