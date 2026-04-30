@@ -159,6 +159,26 @@ def load_sites(path: Path = SEED_FILE) -> List[Site]:
     return [Site(**s) for s in data["site"]]
 
 
+def _resolve_module_path(module: str, config_dir: Optional[Path]) -> Optional[Path]:
+    """Find ``<module>.py`` in the external config dir, then in ROOT.
+
+    Returns the first existing path or ``None`` if neither location has
+    it. ROOT is the gamba_pick install — the framework's public
+    reference configs (spinquest, stake_us) live there and stay
+    reachable when the runner is pointed at an external bundle, so a
+    single comprehensive seed can mix both without forcing duplicates
+    into the bundle.
+    """
+    if config_dir is not None:
+        external = (config_dir / f"{module}.py").resolve()
+        if external.exists():
+            return external
+    in_tree = ROOT / f"{module}.py"
+    if in_tree.exists():
+        return in_tree
+    return None
+
+
 def _expand_id_args(raw: List[str]) -> set[str]:
     """Flatten ``--only`` / ``--skip`` arguments into a set of site ids.
 
@@ -242,10 +262,17 @@ def run_site(site: Site, opts: argparse.Namespace) -> RunResult:
     # an external module wouldn't resolve. We keep ``cwd=ROOT`` (so
     # relative paths like ``profiles/<site>`` still work) and inject
     # ROOT into the child's ``PYTHONPATH`` so framework imports land.
-    if opts.config_dir:
-        module_path = (opts.config_dir / f"{site.module}.py").resolve()
-    else:
-        module_path = ROOT / f"{site.module}.py"
+    #
+    # Resolution order when ``--config-dir`` is set: external dir first,
+    # then ROOT as fallback. This lets a single seed (e.g. the Casino
+    # Buddy comprehensive seed) reference both bundle modules and the
+    # framework's public reference configs (spinquest, stake_us)
+    # without forcing the bundle to ship duplicates.
+    module_path = _resolve_module_path(site.module, opts.config_dir)
+    assert module_path is not None, (
+        f"site {site.id} module {site.module}.py vanished between "
+        f"preflight and run"
+    )
     cmd = [sys.executable, str(module_path)]
     if site.auth == "oauth":
         cmd.append("--google-oauth")
@@ -273,25 +300,57 @@ def run_site(site: Site, opts: argparse.Namespace) -> RunResult:
     stdout = ""
     stderr = ""
     exit_code = -1
-    try:
-        result = subprocess.run(
-            cmd,
-            cwd=ROOT,
-            env=child_env,
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-        )
-        exit_code = result.returncode
-        stdout = result.stdout
-        stderr = result.stderr
-    except subprocess.TimeoutExpired as e:
-        timed_out = True
-        stdout = e.stdout.decode() if isinstance(e.stdout, bytes) else (e.stdout or "")
-        stderr = e.stderr.decode() if isinstance(e.stderr, bytes) else (e.stderr or "")
-        stderr += f"\n[runner] timed out after {timeout_s}s"
+    if opts.stream:
+        # Dev mode: inherit stdout/stderr so the user sees logs live.
+        # We lose the ability to parse balances + claim outcome, and
+        # ``main`` skips the JSONL append so dev runs don't pollute
+        # production history. Useful when iterating on a single site
+        # via ``--only <id>``.
+        try:
+            result = subprocess.run(
+                cmd, cwd=ROOT, env=child_env, timeout=timeout_s
+            )
+            exit_code = result.returncode
+        except subprocess.TimeoutExpired:
+            timed_out = True
+    else:
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=ROOT,
+                env=child_env,
+                capture_output=True,
+                text=True,
+                timeout=timeout_s,
+            )
+            exit_code = result.returncode
+            stdout = result.stdout
+            stderr = result.stderr
+        except subprocess.TimeoutExpired as e:
+            timed_out = True
+            stdout = e.stdout.decode() if isinstance(e.stdout, bytes) else (e.stdout or "")
+            stderr = e.stderr.decode() if isinstance(e.stderr, bytes) else (e.stderr or "")
+            stderr += f"\n[runner] timed out after {timeout_s}s"
 
     duration = time.monotonic() - start
+    if opts.stream:
+        # No captured output to parse; trust the exit code and skip
+        # ok-marker / outcome / balance parsing. ``claim_outcome``
+        # is set to "streamed" so post-hoc readers can tell this run
+        # bypassed the parser (though we also skip the JSONL append).
+        return RunResult(
+            ts=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            site_id=site.id,
+            module=site.module,
+            ok=(exit_code == 0 and not timed_out),
+            exit_code=exit_code,
+            duration_s=round(duration, 2),
+            timed_out=timed_out,
+            balances={},
+            claim_outcome="streamed",
+            stdout_tail="",
+            stderr_tail="",
+        )
     # casino.py's logger uses ``logging.StreamHandler()`` which defaults
     # to stderr, so all the INFO lines we want to grep are over there.
     # Parse the union — keep the streams separate in the record so a
@@ -382,6 +441,19 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--stream",
+        action="store_true",
+        help=(
+            "Dev mode: inherit child stdout/stderr (live output) "
+            "instead of capturing them, and skip the JSONL history "
+            "append. Pair with ``--only <id>`` to iterate on a "
+            "single site config and see logs in real time. The "
+            "outcome/balance parser is bypassed (it needs captured "
+            "output) — use the canonical capturing path for "
+            "production sweeps."
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         "--list",
         action="store_true",
@@ -409,12 +481,13 @@ def main() -> int:
         default=None,
         help=(
             "Directory holding additional site modules (e.g. the "
-            "Casino Buddy commercial catalog at ``./configs/``). When "
-            "set, ``<config_dir>/<module>.py`` is used as the site "
-            "script path; pair with ``--seed-file`` pointing at a "
-            "TOML that lists those modules so the runner picks them "
-            "up. Without this flag the runner only sees the in-tree "
-            "open-source reference configs."
+            "Casino Buddy commercial catalog at ``./configs/``). The "
+            "runner searches this dir first, then falls back to the "
+            "in-tree framework path — so a single seed can list both "
+            "bundle modules and the public reference configs "
+            "(spinquest, stake_us) without forcing the bundle to "
+            "ship duplicates. Pair with ``--seed-file`` pointing at "
+            "the bundle's TOML."
         ),
     )
     opts = parser.parse_args()
@@ -431,19 +504,20 @@ def main() -> int:
         skip = _expand_id_args(opts.skip)
         sites = [s for s in sites if s.id not in skip]
 
-    # When ``--config-dir`` is set we expect the site modules to live
-    # there; warn early on any seed entry whose module file is missing
-    # from the resolved path. Same check for the in-tree default —
-    # catches the "I removed a .py without updating the seed" mistake
+    # Preflight: warn early on any seed entry whose module file isn't
+    # reachable in either the external ``--config-dir`` or in ROOT.
+    # Catches the "I removed a .py without updating the seed" mistake
     # early instead of letting it surface as a subprocess no-op.
-    module_root = opts.config_dir if opts.config_dir else ROOT
     valid: List[Site] = []
     for s in sites:
-        module_path = (module_root / f"{s.module}.py").resolve()
-        if not module_path.exists():
+        module_path = _resolve_module_path(s.module, opts.config_dir)
+        if module_path is None:
+            search = (
+                f"{opts.config_dir} or {ROOT}" if opts.config_dir else str(ROOT)
+            )
             print(
-                f"warn: site '{s.id}' module {s.module}.py not found at "
-                f"{module_path} — skipping."
+                f"warn: site '{s.id}' module {s.module}.py not found in "
+                f"{search} — skipping."
             )
             continue
         valid.append(s)
@@ -472,7 +546,11 @@ def main() -> int:
     for site in sites:
         print(f"=== {site.id} ===", flush=True)
         result = run_site(site, opts)
-        append_history(result, opts.log_file)
+        # Skip history append in --stream mode: those runs lack
+        # parsed outcome/balances and are dev-only. Production sweeps
+        # always go through the capturing path.
+        if not opts.stream:
+            append_history(result, opts.log_file)
         flag = "ok" if result.ok else ("timeout" if result.timed_out else "fail")
         # Render balances in alphabetical order for deterministic
         # output (matches CasinoAccountState.__str__).
