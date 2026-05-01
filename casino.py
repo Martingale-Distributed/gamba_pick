@@ -2468,19 +2468,28 @@ def safe_click(
                 )
                 return False
 
-        # 2. Selector validity — zero matches or multi-match (strict-mode
-        # violation imminent if we let Playwright try to click).
+        # 2. Selector validity — wait briefly for the element to attach
+        # (covers modal-open animations and lazy-rendered components),
+        # then check for true not-found vs ambiguous-multi-match.
+        # The 2s grace replaces an immediate ``count()`` check that was
+        # too aggressive when ``safe_click`` is called right after a
+        # click that opens a modal — the tab/button inside often takes
+        # 100-500ms to mount and the immediate count returned 0.
+        # Note: ``wait_for_selector`` returns immediately when the
+        # element is already present, so no cost on the common case.
         try:
-            n_matches = page.locator(selector).count()
+            page.wait_for_selector(selector, state="attached", timeout=2000)
         except BrowserError:
-            n_matches = -1
-        if n_matches == 0:
             log.error(
                 "[click_failed:%s] reason=not_found "
-                "(selector matched zero elements at click time)",
+                "(selector matched zero elements within 2s grace window)",
                 selector,
             )
             return False
+        try:
+            n_matches = page.locator(selector).count()
+        except BrowserError:
+            n_matches = 1  # fall through to retry loop on ambiguous error
         if n_matches > 1:
             log.error(
                 "[click_failed:%s] reason=ambiguous_selector matches=%d "
