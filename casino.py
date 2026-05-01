@@ -1101,6 +1101,35 @@ def make_modal_tab_button(
                         tab_selector,
                     )
                     return
+            # Bound the wait for the claim button to mount via the
+            # per-site ``btn_visibility_timeout_ms``. Without this bound,
+            # ``is_disabled()`` falls through to Playwright's default
+            # ~60s timeout and hangs silently when the button truly
+            # never appears — observed on shuffle.us, where a successful
+            # daily claim REMOVES the Claim button entirely (rather than
+            # marking it disabled like yay/americanluck do). Treat
+            # button-never-found as a categorized failure so it gets
+            # surfaced loudly instead of looking like a 60s freeze; the
+            # site config can either bump ``btn_visibility_timeout_ms``
+            # if the render is just slow or expose a different
+            # already-claimed signal if the surface differs.
+            try:
+                page.wait_for_selector(
+                    btn_selector,
+                    state="attached",
+                    timeout=btn_visibility_timeout_ms,
+                )
+            except BrowserError:
+                log.error(
+                    "[click_failed:%s] reason=claim_button_not_found "
+                    "(no element matched within %dms after modal+tab "
+                    "clicks; likely already-claimed via element-removal "
+                    "instead of disabled-state, OR the site's claim "
+                    "surface has changed)",
+                    btn_selector,
+                    btn_visibility_timeout_ms,
+                )
+                return
             claim_btn = page.locator(btn_selector)
             if claim_btn.is_disabled():
                 log.info("Daily bonus already claimed.")
