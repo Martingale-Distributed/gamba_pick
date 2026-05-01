@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gamba_pick"
-version = "0.7.0"
+version = "0.8.0"
 description = "Auto Gamba for Fun and Profit"
 readme = { file = "README.md", content-type = "text/markdown" }
 license = "GPL-3.0-or-later"

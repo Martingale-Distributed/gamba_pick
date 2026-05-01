@@ -312,6 +312,13 @@ def run_site(site: Site, opts: argparse.Namespace) -> RunResult:
     child_env["PYTHONPATH"] = (
         f"{ROOT}{os.pathsep}{existing_pp}" if existing_pp else str(ROOT)
     )
+    # Stuck-detection / Inspector pause flag. ``casino.safe_click`` reads
+    # ``GAMBA_PICK_PAUSE_ON_STUCK`` at import time; propagate from the
+    # runner CLI flag into per-site subprocess env so the user can opt
+    # in for one run without editing source. Refused under --headless
+    # (Inspector window needs a display).
+    if getattr(opts, "pause_on_stuck", False) and not opts.headless:
+        child_env["GAMBA_PICK_PAUSE_ON_STUCK"] = "1"
 
     start = time.monotonic()
     timed_out = False
@@ -447,6 +454,18 @@ def main() -> int:
         "--skip-claim",
         action="store_true",
         help="Pass --skip-claim to each site (login + balance read, no claim).",
+    )
+    parser.add_argument(
+        "--pause-on-stuck",
+        action="store_true",
+        help=(
+            "When ``casino.safe_click`` detects a click intercept (an "
+            "overlay sitting on top of the target), drop into Playwright's "
+            "Inspector via ``page.pause()`` so the user can interactively "
+            "inspect the DOM, dismiss the blocker, and resume. Sets "
+            "``GAMBA_PICK_PAUSE_ON_STUCK=1`` in the per-site subprocess "
+            "env. Ignored under ``--headless`` (Inspector needs a display)."
+        ),
     )
     parser.add_argument(
         "--setup",

@@ -74,6 +74,13 @@ MAX_CLICK_RETRIES = 3  # Maximum number of retry attempts for failed clicks
 HANG_DETECTION_SECONDS = 30  # Seconds without balance change before detecting hang
 MAX_KENO_ITERATIONS = 1000  # Maximum iterations in gambling loop as safety net
 
+# When true, ``safe_click`` calls ``page.pause()`` (Playwright Inspector)
+# on detected click-intercept so the user can step through interactively.
+# Driven by ``GAMBA_PICK_PAUSE_ON_STUCK=1`` env var; runner.py propagates
+# this from the ``--pause-on-stuck`` CLI flag into per-site subprocess
+# env. Refuse to enable in headless mode (Inspector needs a display).
+PAUSE_ON_STUCK = os.getenv("GAMBA_PICK_PAUSE_ON_STUCK", "0") == "1"
+
 
 @lru_cache(1, typed=True)
 def setup_logger():
@@ -1060,17 +1067,54 @@ def make_modal_tab_button(
             )
 
         try:
-            page.click(modal_selector, delay=gaussian_random_delay(), timeout=5000)
+            # Modal-open click (button.buttonBuy / wallet button / etc.)
+            # — the canonical "stuck" site for this flow. ``safe_click``
+            # runs a stuck-detection precheck and logs structured
+            # diagnostics naming the intercepting element if anything
+            # is on top, instead of burning the full Playwright
+            # actionability-retry budget on a "<X> intercepts pointer
+            # events" loop.
+            if not safe_click(
+                page,
+                modal_selector,
+                timeout=5000,
+                max_retries=1,
+            ):
+                log.error(
+                    "Daily bonus claim failed: modal trigger %s not "
+                    "clickable (see [stuck] log line above for the "
+                    "intercepting element).",
+                    modal_selector,
+                )
+                return
             if tab_selector:
-                page.click(tab_selector, delay=gaussian_random_delay(), timeout=5000)
+                if not safe_click(
+                    page,
+                    tab_selector,
+                    timeout=5000,
+                    max_retries=1,
+                ):
+                    log.error(
+                        "Daily bonus claim failed: tab %s not clickable",
+                        tab_selector,
+                    )
+                    return
             claim_btn = page.locator(btn_selector)
             if claim_btn.is_disabled():
                 log.info("Daily bonus already claimed.")
             else:
-                claim_btn.click(
-                    delay=gaussian_random_delay(),
+                if not safe_click(
+                    page,
+                    btn_selector,
                     timeout=btn_visibility_timeout_ms,
-                )
+                    max_retries=1,
+                ):
+                    log.error(
+                        "Daily bonus claim failed: claim button %s not "
+                        "clickable (see [stuck] log line above).",
+                        btn_selector,
+                    )
+                    return
                 wait_for_load_all_safe(page, timeout=3000)
                 # Canonical success line for runner.parse_outcome — every
                 # claim factory should emit some form of "Daily bonus
@@ -2266,6 +2310,71 @@ def wait_for_clickable(
         return False
 
 
+def check_click_intercept(page: Page, selector: str) -> Optional[Dict]:
+    """Detect whether something is on top of ``selector``'s click point.
+
+    Uses ``document.elementFromPoint`` at the target's bounding-box
+    center to identify what would actually receive a click. Returns
+    None if the target (or one of its descendants) is on top — i.e.
+    clickable. Otherwise returns a diagnostic dict so callers can
+    log *what* blocked them instead of just retrying blind.
+
+    The diagnostic is the same shape the manual probes we used during
+    the SLNGApp-family debugging session produced: target rect, the
+    element actually on top, and a 5-deep ancestor chain so a class
+    like ``.dialog-container`` can be traced back to its semantic
+    parent. Returns None on any error (selector missing, zero-size
+    element, etc.) — caller's normal click-then-wait path handles
+    those cases.
+
+    Returns:
+        ``None`` if not intercepted (clickable), else ``dict`` with
+        keys ``target_selector``, ``target_rect`` (x/y/w/h/cx/cy),
+        ``intercepted_by`` (tag/className/id/position/zIndex), and
+        ``ancestor_chain`` (list of up to 5 ancestors).
+    """
+    try:
+        info = page.evaluate(
+            """(sel) => {
+                const el = document.querySelector(sel);
+                if (!el) return null;
+                const r = el.getBoundingClientRect();
+                if (r.width === 0 || r.height === 0) return null;
+                const cx = r.x + r.width / 2;
+                const cy = r.y + r.height / 2;
+                const top = document.elementFromPoint(cx, cy);
+                if (!top) return null;
+                if (top === el || el.contains(top)) return null;
+                const ancestors = [];
+                let n = top;
+                while (n && ancestors.length < 5) {
+                    const cs = getComputedStyle(n);
+                    ancestors.push({
+                        tag: n.tagName,
+                        className: (n.className || '').toString().slice(0, 200),
+                        id: n.id,
+                        position: cs.position,
+                        zIndex: cs.zIndex,
+                    });
+                    n = n.parentElement;
+                }
+                return {
+                    target_rect: {x: r.x, y: r.y, w: r.width, h: r.height, cx, cy},
+                    intercepted_by: ancestors[0],
+                    ancestor_chain: ancestors,
+                };
+            }""",
+            selector,
+        )
+    except BrowserError as e:
+        log.debug("check_click_intercept(%s) failed: %s", selector, e)
+        return None
+    if info is None:
+        return None
+    info["target_selector"] = selector
+    return info
+
+
 def safe_click(
     page: Page,
     selector: str,
@@ -2274,8 +2383,10 @@ def safe_click(
     delay: Optional[int] = None,
     force: bool = False,
     scroll_into_view: bool = True,
+    detect_intercept: bool = True,
+    pause_on_stuck: bool = PAUSE_ON_STUCK,
 ) -> bool:
-    """Perform a click operation with timeout and retry logic.
+    """Perform a click operation with timeout, retry, and stuck-detection.
 
     Args:
         page (Page): The Playwright page object.
@@ -2284,16 +2395,68 @@ def safe_click(
         max_retries (int, optional): Maximum number of retry attempts. Defaults to MAX_CLICK_RETRIES.
         delay (int, optional): Click delay in milliseconds. If None, uses gaussian_random_delay().
         force (bool, optional): Whether to force the click. Defaults to False.
+            Implicitly disables ``detect_intercept`` (force-click bypasses
+            actionability checks anyway).
         scroll_into_view (bool, optional): Whether to scroll element into view first. Defaults to True.
+        detect_intercept (bool, optional): Run ``check_click_intercept``
+            before each attempt. On detected intercept, log a structured
+            warning naming the blocker (its tag, className, z-index, and
+            ancestor chain) and return False without burning the full
+            Playwright actionability-retry budget. Default True; pass
+            False for the rare case where a transient intercept is
+            expected and you'd rather let Playwright retry through it.
+        pause_on_stuck (bool, optional): On detected intercept, call
+            ``page.pause()`` to drop into Playwright's Inspector for
+            interactive debugging. Defaults to env-var-driven
+            ``PAUSE_ON_STUCK`` (controlled by ``--pause-on-stuck``
+            on runner.py). Inspector needs a display — don't pair
+            with ``--headless``.
 
     Returns:
-        bool: True if click succeeded, False otherwise.
+        bool: True if click succeeded, False otherwise (intercepted,
+        not clickable, or all retries exhausted).
     """
     if delay is None:
         delay = gaussian_random_delay()
 
     for attempt in range(max_retries):
         try:
+            # Stuck-detection precheck — bail FAST with diagnostic info
+            # if something is sitting on top of the click point. Skipped
+            # under ``force=True`` because force-click bypasses
+            # Playwright's actionability checks anyway.
+            if detect_intercept and not force:
+                intercept = check_click_intercept(page, selector)
+                if intercept:
+                    blocker = intercept["intercepted_by"]
+                    log.warning(
+                        "[stuck] %s click intercepted by <%s class=%r id=%r "
+                        "position=%s z-index=%s>; rect=%s; ancestor chain=%s",
+                        selector,
+                        blocker["tag"],
+                        blocker["className"],
+                        blocker["id"],
+                        blocker["position"],
+                        blocker["zIndex"],
+                        intercept["target_rect"],
+                        intercept["ancestor_chain"],
+                    )
+                    if pause_on_stuck:
+                        log.info(
+                            "[stuck] PAUSE_ON_STUCK set; opening Playwright "
+                            "Inspector. Click 'Resume' in the inspector to "
+                            "continue (or close it to abort)."
+                        )
+                        try:
+                            page.pause()
+                        except BrowserError as e:
+                            log.warning(
+                                "[stuck] page.pause() failed (no display? "
+                                "running headless?): %s",
+                                e,
+                            )
+                    return False
+
             # Wait for element to be clickable
             if not force and not wait_for_clickable(
                 page, selector, timeout, scroll_into_view
