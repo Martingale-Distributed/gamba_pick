@@ -1008,6 +1008,8 @@ def make_modal_tab_button(
     # multi-second animation — e.g. PulszBingo's "Wheel of Winners",
     # which spins for ~6-8s before "GET MY COINS" appears.
     btn_visibility_timeout_ms: int = 5000,
+    # Per-site already-claimed marker. See MTBClaimConfig.
+    already_claimed_selector: Optional[str] = None,
 ) -> Callable[[Page], None]:
     """Generator for claiming daily bonus via modal, tab, button pattern.
     Args:
@@ -1020,6 +1022,12 @@ def make_modal_tab_button(
         btn_visibility_timeout_ms (int): Wait budget for ``btn_selector``
             to become clickable. Bump for flows where the CTA is gated
             on a multi-second animation.
+        already_claimed_selector (Optional[str]): If set, checked after
+            modal+tab clicks but before waiting for ``btn_selector``.
+            When matched (visible), logs "Daily bonus already claimed."
+            and exits cleanly. Used for sites that signal claimed-state
+            via a replacement element (e.g. a countdown timer) rather
+            than disabling the Claim button or hiding the modal trigger.
     Returns:
         Callable[[Page], None]: A function that performs the daily bonus claim action on the given page.
     """
@@ -1101,35 +1109,72 @@ def make_modal_tab_button(
                         tab_selector,
                     )
                     return
-            # Bound the wait for the claim button to mount via the
-            # per-site ``btn_visibility_timeout_ms``. Without this bound,
-            # ``is_disabled()`` falls through to Playwright's default
-            # ~60s timeout and hangs silently when the button truly
-            # never appears — observed on shuffle.us, where a successful
-            # daily claim REMOVES the Claim button entirely (rather than
-            # marking it disabled like yay/americanluck do). Treat
-            # button-never-found as a categorized failure so it gets
-            # surfaced loudly instead of looking like a 60s freeze; the
-            # site config can either bump ``btn_visibility_timeout_ms``
-            # if the render is just slow or expose a different
-            # already-claimed signal if the surface differs.
+            # Wait for EITHER the claim button OR the per-site
+            # already-claimed marker to mount. Single wait avoids the
+            # tab-content render race that bit a previous attempt
+            # (``is_visible()`` returned False because the tab's
+            # contents hadn't rendered yet, even though they would
+            # have within ~500ms).
+            #
+            # Three detection paths for already-claimed state:
+            #   1. ``modal_selector`` not visible (Modo, PulszBingo) —
+            #      handled by the pre-check at the top of this fn.
+            #   2. ``btn_selector`` is_disabled() (yay, americanluck,
+            #      stake) — handled below after this wait.
+            #   3. ``already_claimed_selector`` matches (shuffle's
+            #      ``TimeRemain`` countdown that REPLACES the Claim
+            #      button) — handled below right after this wait.
+            wait_selector = (
+                f"{already_claimed_selector}, {btn_selector}"
+                if already_claimed_selector
+                else btn_selector
+            )
             try:
                 page.wait_for_selector(
-                    btn_selector,
+                    wait_selector,
                     state="attached",
                     timeout=btn_visibility_timeout_ms,
                 )
             except BrowserError:
                 log.error(
                     "[click_failed:%s] reason=claim_button_not_found "
-                    "(no element matched within %dms after modal+tab "
-                    "clicks; likely already-claimed via element-removal "
-                    "instead of disabled-state, OR the site's claim "
-                    "surface has changed)",
+                    "(neither claim button nor already-claimed marker "
+                    "matched within %dms after modal+tab clicks; site's "
+                    "claim surface may have changed — consider setting "
+                    "or updating ``already_claimed_selector`` on the "
+                    "MTBClaimConfig)",
                     btn_selector,
                     btn_visibility_timeout_ms,
                 )
+                if PAUSE_ON_STUCK:
+                    log.info(
+                        "[click_failed] PAUSE_ON_STUCK set; opening "
+                        "Playwright Inspector. Click 'Resume' to "
+                        "continue (or close to abort)."
+                    )
+                    try:
+                        page.pause()
+                    except BrowserError as e:
+                        log.warning(
+                            "[click_failed] page.pause() failed (no "
+                            "display? running headless?): %s",
+                            e,
+                        )
                 return
+
+            # Already-claimed marker takes precedence: if visible,
+            # we're done — log and return without trying to click
+            # a button that may not exist.
+            if already_claimed_selector:
+                try:
+                    if page.locator(already_claimed_selector).first.is_visible():
+                        log.info("Daily bonus already claimed.")
+                        return
+                except BrowserError:
+                    # Marker evaluation hiccuped — fall through to
+                    # the claim-button path rather than masking a
+                    # real failure.
+                    pass
             claim_btn = page.locator(btn_selector)
             if claim_btn.is_disabled():
                 log.info("Daily bonus already claimed.")
@@ -2701,6 +2746,23 @@ class MTBClaimConfig:
     # flows where the CTA only appears after a multi-second animation
     # (PulszBingo's wheel spins ~6-8s before "GET MY COINS" renders).
     btn_visibility_timeout_ms: int = 5000
+    # Per-site marker for already-claimed state. Checked AFTER the
+    # modal+tab clicks but BEFORE waiting for ``btn_selector`` —
+    # if any matching element is visible, log "Daily bonus already
+    # claimed." and exit cleanly. Required for sites whose
+    # already-claimed surface differs from both the framework's
+    # built-in detection paths:
+    #   1. ``modal_selector`` not visible (Modo, PulszBingo) — daily
+    #      trigger button literally disappears post-claim.
+    #   2. ``btn_selector`` is_disabled() (yay, americanluck, stake) —
+    #      Claim button stays mounted but ``disabled`` attribute set.
+    # Shuffle.us is a third pattern: Claim button is REMOVED from DOM
+    # entirely, replaced by a "TimeRemain" countdown
+    # ("5h 58m 32s until claim") — set this to
+    # ``'p[class*="TimeRemain_timeRemain"]'`` to detect it cleanly
+    # instead of triggering a [click_failed:claim_button_not_found]
+    # every day after the first claim.
+    already_claimed_selector: Optional[str] = None
 
 
 @dataclass

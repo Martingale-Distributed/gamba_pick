@@ -137,6 +137,11 @@ def create_shuffle_us_config() -> CasinoConfig:
             tab_selector='button[class*="ModalTabOption_root"]:has-text("Daily Bonus")',
             btn_selector='[class*="ModalContent_show"] button:has-text("Claim")',
             close_btn_selector='button[aria-label="Close modal"]',
+            # When already claimed, shuffle replaces the Claim button
+            # with a countdown ``<p class="TimeRemain_timeRemain__hash">5h 58m
+            # 32s until claim</p>``. Match on the CSS-module name
+            # (the ``__hash`` suffix churns across builds).
+            already_claimed_selector='p[class*="TimeRemain_timeRemain"]',
         ),
         claim_pattern="mtb",
 
