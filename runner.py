@@ -274,16 +274,34 @@ def run_site(site: Site, opts: argparse.Namespace) -> RunResult:
         f"preflight and run"
     )
     cmd = [sys.executable, str(module_path)]
-    if site.auth == "oauth":
+    # ``--google-oauth`` resolves from either the seed's per-site
+    # ``auth="oauth"`` default or the runner-level ``--google-oauth``
+    # override. The override exists because the seed's ``auth`` field
+    # is the current user's default (per-user, not site-inherent —
+    # both surfaces are typically supported on each site), so a user
+    # whose accounts use OAuth on a form-default site should be able
+    # to flip it without editing the seed.
+    if site.auth == "oauth" or opts.google_oauth:
         cmd.append("--google-oauth")
-    # ``form`` auth: nothing extra on the CLI; the site script reads
-    # credentials from .env via casino.get_credentials.
+    # ``form`` auth (and no override): nothing extra on the CLI; the
+    # site script reads credentials from .env via casino.get_credentials.
     if opts.headless:
         cmd.append("--headless")
     if opts.skip_claim:
         cmd.append("--skip-claim")
+    if opts.setup:
+        cmd.append("--setup")
 
     timeout_s = site.timeout_s if site.timeout_s is not None else opts.timeout_per_site
+    # Setup mode runs the login interactively (it blocks until the
+    # user finishes Google OAuth / 2FA / etc. in the browser), so the
+    # 5-minute default is too tight. Auto-bump to 20 minutes when
+    # ``--setup`` is set unless the user explicitly overrode
+    # ``--timeout-per-site``. Per-site ``timeout_s`` overrides in the
+    # seed (for sites with predictable teardown hangs) take precedence
+    # over both — they're a property of the site, not the run mode.
+    if opts.setup and site.timeout_s is None and opts.timeout_per_site == DEFAULT_TIMEOUT_S:
+        timeout_s = 1200
 
     # Prepend ROOT to PYTHONPATH so external site modules (loaded via
     # ``--config-dir``) can import the framework. Inheriting the rest
@@ -431,6 +449,33 @@ def main() -> int:
         help="Pass --skip-claim to each site (login + balance read, no claim).",
     )
     parser.add_argument(
+        "--setup",
+        action="store_true",
+        help=(
+            "Pass --setup to each site so the script runs interactive "
+            "login once to bootstrap the persistent browser profile, "
+            "then exits without claim. Typically paired with "
+            "``--only <id>`` for one-site-at-a-time bootstrapping. "
+            "Implies ``--stream`` (setup blocks on user input — the "
+            "live stdout/stderr is required so the user can see "
+            "prompts). When ``--timeout-per-site`` is at its default, "
+            "the subprocess timeout is auto-bumped to 1200s so the "
+            "user has time to complete OAuth / 2FA in the browser."
+        ),
+    )
+    parser.add_argument(
+        "--google-oauth",
+        action="store_true",
+        help=(
+            "Force Google OAuth on every site this run, overriding "
+            "the seed's per-site ``auth`` field. Useful when this "
+            "user has Google-OAuth accounts on sites the seed "
+            "defaults to form-login (the ``auth`` field is "
+            "per-user-default, not site-inherent — both surfaces are "
+            "typically available on each site)."
+        ),
+    )
+    parser.add_argument(
         "--timeout-per-site",
         type=int,
         default=DEFAULT_TIMEOUT_S,
@@ -491,6 +536,13 @@ def main() -> int:
         ),
     )
     opts = parser.parse_args()
+
+    # ``--setup`` implies ``--stream``: setup mode blocks on user
+    # input (OAuth flow / "press Enter when done" prompts), so the
+    # subprocess must inherit stdout/stderr — captured output would
+    # buffer the prompts and the user would be typing blind.
+    if opts.setup and not opts.stream:
+        opts.stream = True
 
     all_sites = load_sites(opts.seed_file)
     sites = [s for s in all_sites if s.status == "working" and s.module]

@@ -408,6 +408,95 @@ def _find_first_visible(page: Page, selector: str) -> Optional[Locator]:
     return None
 
 
+def wait_and_remove(
+    page: Page,
+    selector: str,
+    label: str,
+    wait_timeout_ms: int = 5000,
+) -> bool:
+    """Wait briefly for a modal to mount, then JS-remove all matches.
+
+    Use in place of ``make_dismiss_popup`` for overlays where
+    Playwright's click-based dismiss is unreliable in patchright —
+    e.g. close-button clicks fire but the React onClose handler
+    doesn't propagate to actually unmount the modal, leaving a
+    backdrop blocking subsequent clicks. JS removal sidesteps
+    Playwright click semantics, navigation-orphan-promise risk
+    (the same gotcha ``make_pre_login_click`` defends against), and
+    React state-propagation timing entirely.
+
+    Cost: doesn't fire the modal's React ``onClose`` handler, so
+    React state is stale after removal. Fine for one-shot daily
+    runs that close the browser at the end; not appropriate for
+    long-lived sessions where the same modal might remount and
+    confuse internal state.
+
+    ``selector`` accepts a comma-separated list (Playwright's
+    ``locator(...)`` and the underlying ``querySelectorAll`` both
+    treat commas as CSS "or"), useful for modals that mount as
+    multiple body-level siblings (e.g. dialog container + separate
+    blur backdrop).
+
+    Verbose by design: logs whether the element appeared, how many
+    matches were removed, or whether nothing was visible to remove.
+    Tune log levels at the framework level if this becomes noisy
+    across many sites.
+
+    Args:
+        page: Playwright page.
+        selector: CSS selector (comma-separated lists supported)
+            for the element(s) to wait-for-then-remove.
+        label: Short human-readable name for log messages
+            (e.g. "cookie-consent", "welcome-bonus").
+        wait_timeout_ms: How long to wait for the first match to
+            become visible before giving up. Default 5000ms.
+
+    Returns:
+        True if at least one match was removed, False otherwise
+        (timeout, error, or zero matches at removal time).
+    """
+    try:
+        page.locator(selector).first.wait_for(
+            state="visible", timeout=wait_timeout_ms
+        )
+    except BrowserError:
+        log.info(
+            "[wait_and_remove:%s] not visible within %dms; nothing to remove (%s)",
+            label,
+            wait_timeout_ms,
+            selector,
+        )
+        return False
+    try:
+        n = page.evaluate(
+            "(sel) => { const els = document.querySelectorAll(sel); "
+            "els.forEach(el => el.remove()); return els.length; }",
+            selector,
+        )
+    except BrowserError as e:
+        log.warning(
+            "[wait_and_remove:%s] JS-remove failed for %s: %s",
+            label,
+            selector,
+            e,
+        )
+        return False
+    if n > 0:
+        log.info(
+            "[wait_and_remove:%s] JS-removed %d match(es) of %s",
+            label,
+            n,
+            selector,
+        )
+        return True
+    log.info(
+        "[wait_and_remove:%s] selector matched nothing at removal time (%s)",
+        label,
+        selector,
+    )
+    return False
+
+
 def make_dismiss_popup(
     modal_selector: str,
     close_selector: Optional[str] = None,
@@ -479,12 +568,26 @@ def make_dismiss_popup(
 
         modal = page.locator(modal_selector).first
 
+        # All three click sites below pass ``no_wait_after=True``.
+        # Dismissal clicks routinely fire side-effect requests (cookie-
+        # consent service writes, modal-close telemetry, fallback CTA
+        # navigations). Playwright's default click semantics arm a
+        # "wait for navigation" promise after each click; if no nav
+        # actually fires (it was just a fetch) the promise orphans on
+        # the Node side and unhandled-rejection-crashes the driver
+        # several seconds later — typically mid-flow during a
+        # downstream wait, with a misleading 3000ms TimeoutError. Same
+        # gotcha ``make_pre_login_click`` documents and defends against.
         # 1. Site-specific close button (fastest path when it works).
         if close_selector:
             close_btn = page.locator(close_selector).first
             try:
                 if close_btn.count() > 0 and close_btn.is_visible():
-                    close_btn.click(delay=gaussian_random_delay(), timeout=3000)
+                    close_btn.click(
+                        delay=gaussian_random_delay(),
+                        timeout=3000,
+                        no_wait_after=True,
+                    )
                     if _wait_gone(page):
                         log.info(
                             "[popup:%s] dismissed via close_selector %s",
@@ -501,7 +604,11 @@ def make_dismiss_popup(
             try:
                 cand = modal.locator(sel).first
                 if cand.count() > 0 and cand.is_visible():
-                    cand.click(delay=gaussian_random_delay(), timeout=3000)
+                    cand.click(
+                        delay=gaussian_random_delay(),
+                        timeout=3000,
+                        no_wait_after=True,
+                    )
                     if _wait_gone(page):
                         log.info("[popup:%s] dismissed via generic %s", label, sel)
                         return
@@ -525,7 +632,11 @@ def make_dismiss_popup(
             fb = page.locator(fallback_selector).first
             try:
                 if fb.count() > 0 and fb.is_visible():
-                    fb.click(delay=gaussian_random_delay(), timeout=3000)
+                    fb.click(
+                        delay=gaussian_random_delay(),
+                        timeout=3000,
+                        no_wait_after=True,
+                    )
                     log.info(
                         "[popup:%s] dismissed via fallback %s",
                         label,
@@ -1352,6 +1463,151 @@ def wait_for_turnstile(
         return True
     except BrowserError:
         log.warning("Turnstile did not resolve within %dms total", timeout)
+        return False
+
+
+# reCAPTCHA v2 detection. The widget mounts two iframes inside its host
+# page: a visible "anchor" iframe with the checkbox, and an off-screen
+# "bframe" iframe that pops in for image challenges. The
+# ``g-recaptcha-response`` textarea (initially empty) holds the
+# resolution token once the challenge passes — its ``.value`` is the
+# canonical "solved" signal Google's JS writes for the host site to
+# pick up.
+_RECAPTCHA_DETECT_JS = """
+(() => {
+  if (document.querySelector('iframe[src*="google.com/recaptcha"]')) return true;
+  if (document.querySelector('textarea[name="g-recaptcha-response"]')) return true;
+  if (typeof window.grecaptcha !== 'undefined' &&
+      document.querySelector('.g-recaptcha, [data-sitekey]')) return true;
+  return false;
+})()
+""".strip()
+
+_RECAPTCHA_SOLVED_JS = """
+(() => {
+  const ta = document.querySelector('textarea[name="g-recaptcha-response"]');
+  return !!(ta && ta.value && ta.value.length > 0);
+})()
+""".strip()
+
+
+def _click_recaptcha_checkbox(page: Page) -> bool:
+    """Click the reCAPTCHA v2 anchor-iframe checkbox.
+
+    Targets the anchor iframe via Playwright's ``frame_locator``
+    (cross-origin iframes can be addressed by selector even though
+    JS evaluation can't reach across the boundary), then clicks the
+    ``#recaptcha-anchor`` div inside. The click sends a real
+    mousedown/mouseup pair to the iframe content; Google's JS scores
+    the fingerprint and either auto-passes the token (low risk) or
+    escalates to the bframe image challenge (which we don't solve
+    headless).
+
+    Returns True if the click was issued, False if the iframe wasn't
+    addressable.
+    """
+    try:
+        anchor = page.frame_locator(
+            'iframe[src*="google.com/recaptcha/api2/anchor"]'
+        )
+        checkbox = anchor.locator("#recaptcha-anchor")
+        if checkbox.count() > 0:
+            checkbox.click(timeout=5000)
+            log.info("Clicked reCAPTCHA checkbox")
+            return True
+    except BrowserError as e:
+        log.warning("[recaptcha] checkbox click failed: %s", e)
+    return False
+
+
+def wait_for_recaptcha(
+    page: Page,
+    timeout: int = 30000,
+    auto_click_after_ms: Optional[int] = 5000,
+) -> bool:
+    """Wait for (and optionally actively solve) a reCAPTCHA v2 checkbox challenge.
+
+    Parallel API to ``wait_for_turnstile`` but for Google reCAPTCHA.
+    Detection probes for the anchor iframe + ``grecaptcha`` global +
+    ``g-recaptcha-response`` textarea. If the textarea's value is
+    populated when we look, returns True. Otherwise waits up to
+    ``auto_click_after_ms`` for the invisible/scoring auto-pass; if
+    that doesn't fire, clicks the anchor checkbox; then waits for the
+    response token to populate within the overall ``timeout``.
+
+    A False return almost always means the checkbox click escalated to
+    the bframe image challenge — we don't ship an image solver, so
+    the caller should fail the claim and retry the flow tomorrow (or
+    surface the captcha to a human via ``--setup``).
+
+    Pass ``auto_click_after_ms=None`` to disable the active click and
+    behave like a passive waiter — useful in ``--setup`` mode where
+    a human is driving and we don't want to race them.
+
+    Args:
+        page: Playwright page.
+        timeout: Total ms to wait for resolution (covers both the
+            auto-pass grace window and any post-click settle).
+        auto_click_after_ms: Grace window for auto-pass before we
+            click the checkbox ourselves. ``None`` disables the click.
+
+    Returns:
+        True if reCAPTCHA resolved (or wasn't present). False if it
+        was present but didn't resolve in time.
+    """
+    detected = page.evaluate(_RECAPTCHA_DETECT_JS)
+    if not detected:
+        # Widgets are often injected asynchronously after a server
+        # round-trip — give Google's script a chance to mount.
+        try:
+            page.wait_for_function(_RECAPTCHA_DETECT_JS, timeout=5000)
+            detected = True
+        except BrowserError:
+            detected = False
+
+    if not detected:
+        log.debug("No reCAPTCHA detected on page")
+        return True
+
+    if page.evaluate(_RECAPTCHA_SOLVED_JS):
+        log.debug("reCAPTCHA already solved")
+        return True
+
+    log.info("reCAPTCHA v2 detected")
+
+    grace = auto_click_after_ms if auto_click_after_ms is not None else timeout
+    grace = max(0, min(grace, timeout))
+    if grace > 0:
+        try:
+            log.info(
+                "Waiting up to %dms for reCAPTCHA invisible/scoring pass...",
+                grace,
+            )
+            page.wait_for_function(_RECAPTCHA_SOLVED_JS, timeout=grace)
+            log.info("reCAPTCHA auto-passed")
+            return True
+        except BrowserError:
+            pass
+
+    if auto_click_after_ms is None:
+        log.info("Auto-click disabled; waiting passively for token...")
+    else:
+        if not _click_recaptcha_checkbox(page):
+            log.warning(
+                "Couldn't click reCAPTCHA checkbox; falling back to passive wait"
+            )
+
+    remaining = max(1000, timeout - grace)
+    try:
+        page.wait_for_function(_RECAPTCHA_SOLVED_JS, timeout=remaining)
+        log.info("reCAPTCHA resolved")
+        return True
+    except BrowserError:
+        log.warning(
+            "reCAPTCHA did not resolve within %dms total — likely "
+            "escalated to image challenge (not supported headless).",
+            timeout,
+        )
         return False
 
 
@@ -2233,9 +2489,23 @@ class CasinoConfig:
     # Required: Currency display configuration
     currency_display: CurrencyDisplayConfig
 
-    # Required: Bonus claiming configuration (choose one pattern)
-    claim_config: MTBClaimConfig | GenericClaimConfig | SimpleClaimConfig
+    # Bonus claiming configuration (choose one pattern). Optional only
+    # when ``custom_claim_action`` is provided below; one of the two
+    # must be set or ``make_casino_automation`` raises at construction
+    # time.
+    claim_config: Optional[MTBClaimConfig | GenericClaimConfig | SimpleClaimConfig] = None
     claim_pattern: Literal["mtb", "generic", "simple"] = "mtb"
+
+    # Optional: Custom claim action. Use this for sites whose claim
+    # flow doesn't fit any of the built-in MTB / Simple / Generic
+    # patterns — e.g. McLuck, where a Cloudflare Turnstile mounts
+    # mid-claim and requires a solve + re-click of the claim button.
+    # When set, the dispatch in ``make_casino_automation`` skips
+    # ``claim_config`` entirely. The callable should emit the
+    # canonical "Daily bonus claimed." / "Daily bonus already
+    # claimed." log lines so the runner's outcome parser categorizes
+    # the run correctly.
+    custom_claim_action: Optional[Callable[[Page], None]] = None
 
     # Optional: Custom balance parser. Use this for sites whose
     # currency-toggle pattern doesn't fit the default

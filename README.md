@@ -68,7 +68,7 @@ python runner.py \
   --headless
 ```
 
-This is the integration point for [**Casino Buddy**](https://casinobuddy.app), the maintained sweepstakes-casino catalog that ships as a separate commercial product (≈10–30 site configs kept current as operators rotate selectors). The framework here is what runs them; the catalog is sold as encrypted bundles per-license. If you want to maintain your own catalog instead, the same `--config-dir` flag is how.
+This is the integration point for [**Casino Buddy**](https://casinobuddy.app), the maintained sweepstakes-casino catalog that ships as a separate commercial product (≈10–30 site configs kept current as the landscape evolves). This framework is used to with the configs, which are available for purchase as an encrypted bundle or you can generate yourself. 
 
 Sites in the seed with `status="commercial"` are catalog entries — listed for visibility, ignored by the open-source runner. Run them by pointing at the catalog as shown above.
 

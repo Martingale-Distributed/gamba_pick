@@ -172,7 +172,7 @@ id = "mcluck_casino"
 name = "McLuck Casino"
 url = "https://www.mcluck.com"
 affiliate_link = "https://www.mcluck.com/lp/raf?r=1cb407a0%2F1058144370"
-status = "surveyed"
+status = "commercial"
 
 [[site]]
 id = "megabonanza"
