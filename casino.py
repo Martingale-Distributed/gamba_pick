@@ -1081,9 +1081,9 @@ def make_modal_tab_button(
                 max_retries=1,
             ):
                 log.error(
-                    "Daily bonus claim failed: modal trigger %s not "
-                    "clickable (see [stuck] log line above for the "
-                    "intercepting element).",
+                    "Daily bonus claim failed: modal trigger %s "
+                    "(see [click_failed] / [stuck] log lines above for "
+                    "the categorized reason).",
                     modal_selector,
                 )
                 return
@@ -1095,7 +1095,9 @@ def make_modal_tab_button(
                     max_retries=1,
                 ):
                     log.error(
-                        "Daily bonus claim failed: tab %s not clickable",
+                        "Daily bonus claim failed: tab %s "
+                        "(see [click_failed] / [stuck] log lines above for "
+                        "the categorized reason).",
                         tab_selector,
                     )
                     return
@@ -1110,8 +1112,9 @@ def make_modal_tab_button(
                     max_retries=1,
                 ):
                     log.error(
-                        "Daily bonus claim failed: claim button %s not "
-                        "clickable (see [stuck] log line above).",
+                        "Daily bonus claim failed: claim button %s "
+                        "(see [click_failed] / [stuck] log lines above for "
+                        "the categorized reason).",
                         btn_selector,
                     )
                     return
@@ -2419,45 +2422,97 @@ def safe_click(
     if delay is None:
         delay = gaussian_random_delay()
 
+    # Once-only fast-fail prechecks — categorize each failure with an
+    # actionable ``[click_failed:%s] reason=...`` line so callers (and
+    # log readers) can tell intercept/not-found/ambiguous/disabled apart
+    # without parsing Playwright's stack-trace prose. Retry budget is
+    # reserved for transient cases (visibility / stability races).
+    if not force:
+        # 1. Intercept — something else on top of the click point.
+        if detect_intercept:
+            intercept = check_click_intercept(page, selector)
+            if intercept:
+                blocker = intercept["intercepted_by"]
+                log.warning(
+                    "[stuck] %s click intercepted by <%s class=%r id=%r "
+                    "position=%s z-index=%s>; rect=%s; ancestor chain=%s",
+                    selector,
+                    blocker["tag"],
+                    blocker["className"],
+                    blocker["id"],
+                    blocker["position"],
+                    blocker["zIndex"],
+                    intercept["target_rect"],
+                    intercept["ancestor_chain"],
+                )
+                if pause_on_stuck:
+                    log.info(
+                        "[stuck] PAUSE_ON_STUCK set; opening Playwright "
+                        "Inspector. Click 'Resume' in the inspector to "
+                        "continue (or close it to abort)."
+                    )
+                    try:
+                        page.pause()
+                    except BrowserError as e:
+                        log.warning(
+                            "[stuck] page.pause() failed (no display? "
+                            "running headless?): %s",
+                            e,
+                        )
+                log.error(
+                    "[click_failed:%s] reason=intercepted "
+                    "blocker=<%s class=%r>",
+                    selector,
+                    blocker["tag"],
+                    blocker["className"],
+                )
+                return False
+
+        # 2. Selector validity — zero matches or multi-match (strict-mode
+        # violation imminent if we let Playwright try to click).
+        try:
+            n_matches = page.locator(selector).count()
+        except BrowserError:
+            n_matches = -1
+        if n_matches == 0:
+            log.error(
+                "[click_failed:%s] reason=not_found "
+                "(selector matched zero elements at click time)",
+                selector,
+            )
+            return False
+        if n_matches > 1:
+            log.error(
+                "[click_failed:%s] reason=ambiguous_selector matches=%d "
+                "(Playwright strict mode rejects multi-match — narrow the "
+                "selector or append .first / :nth-of-type(N))",
+                selector,
+                n_matches,
+            )
+            return False
+
+        # 3. Disabled state — element exists and is alone, but is
+        # explicitly disabled (e.g. claim-once button after the claim).
+        # Skip if the caller already disambiguated via their own
+        # is_disabled() (idempotent — just logs and bails fast here).
+        try:
+            if page.locator(selector).is_disabled():
+                log.warning(
+                    "[click_failed:%s] reason=disabled "
+                    "(element exists but ``disabled`` attribute is set)",
+                    selector,
+                )
+                return False
+        except BrowserError:
+            # is_disabled can raise on detached / animating elements;
+            # let the retry loop's own checks handle that case.
+            pass
+
+    # Retry loop — handles transient visibility / stability races and
+    # Playwright click-time exceptions. The hopeless cases above already
+    # short-circuited.
     for attempt in range(max_retries):
         try:
-            # Stuck-detection precheck — bail FAST with diagnostic info
-            # if something is sitting on top of the click point. Skipped
-            # under ``force=True`` because force-click bypasses
-            # Playwright's actionability checks anyway.
-            if detect_intercept and not force:
-                intercept = check_click_intercept(page, selector)
-                if intercept:
-                    blocker = intercept["intercepted_by"]
-                    log.warning(
-                        "[stuck] %s click intercepted by <%s class=%r id=%r "
-                        "position=%s z-index=%s>; rect=%s; ancestor chain=%s",
-                        selector,
-                        blocker["tag"],
-                        blocker["className"],
-                        blocker["id"],
-                        blocker["position"],
-                        blocker["zIndex"],
-                        intercept["target_rect"],
-                        intercept["ancestor_chain"],
-                    )
-                    if pause_on_stuck:
-                        log.info(
-                            "[stuck] PAUSE_ON_STUCK set; opening Playwright "
-                            "Inspector. Click 'Resume' in the inspector to "
-                            "continue (or close it to abort)."
-                        )
-                        try:
-                            page.pause()
-                        except BrowserError as e:
-                            log.warning(
-                                "[stuck] page.pause() failed (no display? "
-                                "running headless?): %s",
-                                e,
-                            )
-                    return False
-
-            # Wait for element to be clickable
             if not force and not wait_for_clickable(
                 page, selector, timeout, scroll_into_view
             ):
@@ -2474,6 +2529,11 @@ def safe_click(
                     page.wait_for_timeout(backoff_time)
                     continue
                 else:
+                    log.error(
+                        "[click_failed:%s] reason=not_clickable_after_%d_attempts",
+                        selector,
+                        max_retries,
+                    )
                     return False
 
             # Perform the click
@@ -2482,12 +2542,13 @@ def safe_click(
             return True
 
         except Exception as e:
+            err_msg = str(e)[:200]
             log.warning(
                 "Click failed on attempt %d/%d for %s: %s",
                 attempt + 1,
                 max_retries,
                 selector,
-                str(e)[:100],
+                err_msg,
             )
 
             if attempt < max_retries - 1:
@@ -2496,7 +2557,11 @@ def safe_click(
                 log.info("Waiting %dms before retry", backoff_time)
                 page.wait_for_timeout(backoff_time)
             else:
-                log.error("All click attempts failed for %s", selector)
+                log.error(
+                    "[click_failed:%s] reason=exception details=%s",
+                    selector,
+                    err_msg,
+                )
                 return False
 
     return False

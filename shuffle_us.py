@@ -70,6 +70,16 @@ def create_shuffle_us_config() -> CasinoConfig:
             username_selector='input[name="username"]',
             password_selector='input[name="password"]',
             login_submit_selector='button[type="submit"]',
+            # 2FA challenge (post-submit, when the trust cookie isn't
+            # current). ``input[autocomplete="one-time-code"]`` is the
+            # semantic stable selector — the visible class
+            # ``OTPInput_bubbleInput__zo31x`` carries a CSS-module hash
+            # that churns across builds. ``button[form="otp-form"]``
+            # uses the ``form`` linkage attribute (same pattern Shuffle
+            # uses across their submit buttons), avoiding the hashed
+            # ``ButtonVariants_*`` classes.
+            totp_code_selector='input[autocomplete="one-time-code"]',
+            totp_submit_selector='button[form="otp-form"]',
             # The login modal hosts multiple SSO providers in an icon
             # row below the form — Google's button is identified by
             # its ``img[alt="Google"]`` child. Pin to that to avoid
@@ -117,14 +127,26 @@ def create_shuffle_us_config() -> CasinoConfig:
         ),
 
         claim_config=MTBClaimConfig(
-            modal_selector='button:has(img[alt="wallet"])',
+            # ``#wallet-btn`` is the stable id on the header wallet
+            # button. The previous selector ``button:has(img[alt="wallet"])``
+            # was ambiguous after a UI revamp added a mobile-menu
+            # ``ExpandMenuElement_menuItem`` that also contains the
+            # wallet image — Playwright's strict mode (which our
+            # ``safe_click`` enforces) rejects multi-match locators.
+            modal_selector='#wallet-btn',
             tab_selector='button[class*="ModalTabOption_root"]:has-text("Daily Bonus")',
             btn_selector='[class*="ModalContent_show"] button:has-text("Claim")',
             close_btn_selector='button[aria-label="Close modal"]',
         ),
         claim_pattern="mtb",
 
-        requires_2fa=False,
+        # 2FA enabled on this account — TOTP secret read from
+        # ``SHUFFLE_US_2FA`` in picks.env, filled into the OTP input
+        # via the selectors above when the post-login challenge fires.
+        # The challenge appears intermittently (only when the trust
+        # cookie isn't current), so the framework's TOTP block is a
+        # no-op when the input never mounts.
+        requires_2fa=True,
         geoip=False,
         solve_cloudflare=False,
         browser_backend="camoufox",

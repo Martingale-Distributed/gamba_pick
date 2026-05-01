@@ -224,10 +224,28 @@ def create_spinquest_config() -> CasinoConfig:
         claim_pattern="simple",
 
         requires_2fa=False,
-        # Camoufox derives coords+timezone+locale from the real IP so every
-        # GeoComply cross-check (IP vs. navigator.geolocation vs. WebRTC vs.
-        # timezone) agrees. Required to pass the regulatory-grade geo gate.
-        geoip=True,
+        # Switched from ``camoufox`` (Firefox-based) to patchright Chromium
+        # in 2026-05-01. Empirical: real Firefox + Camoufox both get
+        # blocked by SpinQuest's GeoComply check ("not in legal
+        # jurisdiction"); user's regular Chrome is allowed on the same
+        # IP. Same machine, same network — engine-level fingerprint
+        # divergence (most likely WebRTC ICE-candidate handling, where
+        # Firefox is privacy-conservative and GeoComply's SDK was
+        # expecting Chrome-shape data). Switching backends drops
+        # ``geoip=True`` (Camoufox-only stealth feature) but real
+        # Chromium is naturally coherent with the user's real IP, so
+        # the auto-correlation isn't needed. The ``_grant_geo``
+        # permission grant in ``pre_login`` still applies — it's a
+        # context permission, not engine-specific. Profile invalidated
+        # by the swap (Firefox profile layout ≠ Chrome): re-run
+        # ``--setup`` to bootstrap a fresh authenticated profile in
+        # Chromium.
+        #
+        # Fallback if patchright Chromium also gets flagged: add
+        # ``real_chrome=True`` to use the system's installed Chrome
+        # binary (most realistic fingerprint).
+        real_chrome=True,
+        browser_backend="chrome",
         # SpinQuest's lobby + balance hydration is the slowest of the
         # working set (login submit → cookies → navigate → React init →
         # balance fetch chain regularly takes 30-50s). Bumping
