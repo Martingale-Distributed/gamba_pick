@@ -59,7 +59,14 @@ def open_login_modal(page: Page) -> None:
     try:
         btn = page.locator("button.loginBtn").first
         if btn.count() > 0 and btn.is_visible():
-            btn.click(delay=gaussian_random_delay(), timeout=5000)
+            # ``no_wait_after=True`` — modal-open click, no navigation;
+            # see make_dismiss_popup commentary for the orphan-promise
+            # gotcha.
+            btn.click(
+                delay=gaussian_random_delay(),
+                timeout=5000,
+                no_wait_after=True,
+            )
             page.wait_for_timeout(800)
             log.info("Opened SpinQuest login modal")
         else:
@@ -124,10 +131,14 @@ def read_spinquest_balances(page: Page) -> CasinoAccountState:
     for i in range(2):
         if i > 0:
             try:
+                # ``no_wait_after=True`` defends against the orphan-
+                # promise driver crash documented on
+                # ``make_dismiss_popup``.
                 page.click(
                     amounts_btn_selector,
                     delay=gaussian_random_delay(),
                     timeout=5000,
+                    no_wait_after=True,
                 )
                 toggles_done += 1
                 # Brief wait for the value display to update after
@@ -175,7 +186,12 @@ def read_spinquest_balances(page: Page) -> CasinoAccountState:
     # back; an even count (including zero) is already balanced.
     if toggles_done % 2 == 1:
         try:
-            page.click(amounts_btn_selector, delay=gaussian_random_delay(), timeout=5000)
+            page.click(
+                amounts_btn_selector,
+                delay=gaussian_random_delay(),
+                timeout=5000,
+                no_wait_after=True,
+            )
         except BrowserError:
             pass
 
@@ -224,10 +240,34 @@ def create_spinquest_config() -> CasinoConfig:
         claim_pattern="simple",
 
         requires_2fa=False,
-        # Camoufox derives coords+timezone+locale from the real IP so every
-        # GeoComply cross-check (IP vs. navigator.geolocation vs. WebRTC vs.
-        # timezone) agrees. Required to pass the regulatory-grade geo gate.
-        geoip=True,
+        # Switched from ``camoufox`` (Firefox-based) to the system's
+        # installed Chrome on 2026-05-01. Empirical: real Firefox +
+        # Camoufox both get blocked by SpinQuest's GeoComply check
+        # ("not in legal jurisdiction"); the user's regular Chrome is
+        # allowed on the same IP. Same machine, same network —
+        # engine-level fingerprint divergence (most likely WebRTC
+        # ICE-candidate handling, where Firefox is privacy-conservative
+        # and GeoComply's SDK was expecting Chrome-shape data).
+        #
+        # ``browser_backend="chrome"`` + ``real_chrome=True`` together
+        # mean: launch the system-installed Chrome via patchright
+        # rather than patchright's bundled Chromium. The bundled
+        # Chromium is closer to vanilla and could plausibly also pass
+        # GeoComply, but the user's real Chrome is the empirically
+        # verified path. If GeoComply ever escalates beyond what real
+        # Chrome can pass, there's nothing more aggressive to fall
+        # back to in-process.
+        #
+        # Switching off Camoufox drops ``geoip=True`` (a Camoufox-only
+        # stealth feature), but real Chrome is naturally coherent with
+        # the user's real IP — no auto-correlation needed. The
+        # ``_grant_geo`` permission grant in ``pre_login`` still
+        # applies (it's a context permission, not engine-specific).
+        # Profile invalidated by the swap (Firefox profile layout ≠
+        # Chrome): re-run ``--setup`` to bootstrap a fresh
+        # authenticated profile.
+        real_chrome=True,
+        browser_backend="chrome",
         # SpinQuest's lobby + balance hydration is the slowest of the
         # working set (login submit → cookies → navigate → React init →
         # balance fetch chain regularly takes 30-50s). Bumping

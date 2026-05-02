@@ -61,6 +61,14 @@ auth = "form"
 module = "stake_us"
 
 [[site]]
+id = "shuffle_us"
+name = "Shuffle.us"
+url = "https://shuffle.us"
+status = "working"
+auth = "form"
+module = "shuffle_us"
+
+[[site]]
 id = "zula_casino"
 name = "Zula Casino"
 url = "https://zulacasino.com"
@@ -164,7 +172,7 @@ id = "mcluck_casino"
 name = "McLuck Casino"
 url = "https://www.mcluck.com"
 affiliate_link = "https://www.mcluck.com/lp/raf?r=1cb407a0%2F1058144370"
-status = "surveyed"
+status = "commercial"
 
 [[site]]
 id = "megabonanza"
@@ -227,6 +235,12 @@ id = "luckyland_slots"
 name = "LuckyLand Slots"
 url = "https://play.luckylandslots.com/"
 status = "surveyed"
+# Deferred 2026-04-30 after live mapping. The site is a Unity WebGL canvas
+# (no DOM post-login) on the VGW (Virtual Gaming Worlds) backend, with a
+# typed-RPC daily-claim ``casino.collectLoginBonus`` POST to
+# ``owp-proxy.llc.prod.vgw-us.com/public/v3/proxy``. Auth observed was
+# Facebook OAuth — un-headless-able without a "log-in-once + persist
+# session" model. Revisit once a session-persisting auth model lands.
 
 [[site]]
 id = "global_poker"

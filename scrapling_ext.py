@@ -44,7 +44,7 @@ def _default_oauth_profile_dir(name: str) -> str:
     return str(path.resolve())
 
 
-def _make_pre_login_click(selector: str) -> Callable[[Page], None]:
+def make_pre_login_click(selector: str) -> Callable[[Page], None]:
     """Synthesize a pre-login callback from a single CSS selector.
 
     Sites where ``login_url`` points at the homepage need a click on a
@@ -53,6 +53,11 @@ def _make_pre_login_click(selector: str) -> Callable[[Page], None]:
     from ``LoginConfig.pre_login_click_selector`` into the same shape
     of callback users would otherwise hand-roll (cf. Zula's
     ``click_header_login``).
+
+    Public so external configs can compose this with other primitives
+    (e.g. ``casino.make_dismiss_popup`` for a cookie-consent banner)
+    inside their own ``pre_login_callback``, without giving up the
+    framework's standard click-and-wait-for-/login behavior.
 
     The click uses ``no_wait_after=True`` — Playwright's default
     post-click nav-wait creates a driver-side promise that orphans on
@@ -135,8 +140,16 @@ def make_casino_automation(
         ) -> CasinoAccountState | Dict[str, Optional[float]]:
             return get_account_state_func(page)
 
-    # Create claim bonus action based on pattern
-    if config.claim_pattern == "mtb":
+    # Create claim bonus action: custom callable wins if provided;
+    # otherwise dispatch on ``claim_pattern`` against ``claim_config``.
+    if config.custom_claim_action is not None:
+        claim_bonus_action = config.custom_claim_action
+    elif config.claim_config is None:
+        raise ValueError(
+            "CasinoConfig must provide either ``claim_config`` or "
+            "``custom_claim_action``"
+        )
+    elif config.claim_pattern == "mtb":
         if not isinstance(config.claim_config, MTBClaimConfig):
             raise ValueError(
                 "claim_pattern is 'mtb' but claim_config is not MTBClaimConfig"
@@ -147,6 +160,8 @@ def make_casino_automation(
             btn_selector=config.claim_config.btn_selector,
             close_btn_selector=config.claim_config.close_btn_selector,
             btn_visibility_timeout_ms=config.claim_config.btn_visibility_timeout_ms,
+            already_claimed_selector=config.claim_config.already_claimed_selector,
+            pre_claim_settle_ms=config.claim_config.pre_claim_settle_ms,
         )
     elif config.claim_pattern == "simple":
         if not isinstance(config.claim_config, SimpleClaimConfig):
@@ -233,7 +248,7 @@ def make_casino_automation(
         pre_login = config.login.pre_login_callback
         if pre_login is None:
             if config.login.pre_login_click_selector:
-                pre_login = _make_pre_login_click(
+                pre_login = make_pre_login_click(
                     config.login.pre_login_click_selector
                 )
             else:
@@ -241,7 +256,7 @@ def make_casino_automation(
                     f"[{config.name}] No pre_login set; falling back to "
                     "generic HEADER_LOGIN_BUTTON candidates"
                 )
-                pre_login = _make_pre_login_click(
+                pre_login = make_pre_login_click(
                     ", ".join(_GENERIC_HEADER_LOGIN_BUTTON)
                 )
         post_login = config.login.post_login_callback

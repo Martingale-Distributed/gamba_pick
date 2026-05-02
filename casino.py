@@ -74,6 +74,13 @@ MAX_CLICK_RETRIES = 3  # Maximum number of retry attempts for failed clicks
 HANG_DETECTION_SECONDS = 30  # Seconds without balance change before detecting hang
 MAX_KENO_ITERATIONS = 1000  # Maximum iterations in gambling loop as safety net
 
+# When true, ``safe_click`` calls ``page.pause()`` (Playwright Inspector)
+# on detected click-intercept so the user can step through interactively.
+# Driven by ``GAMBA_PICK_PAUSE_ON_STUCK=1`` env var; runner.py propagates
+# this from the ``--pause-on-stuck`` CLI flag into per-site subprocess
+# env. Refuse to enable in headless mode (Inspector needs a display).
+PAUSE_ON_STUCK = os.getenv("GAMBA_PICK_PAUSE_ON_STUCK", "0") == "1"
+
 
 @lru_cache(1, typed=True)
 def setup_logger():
@@ -226,11 +233,17 @@ def make_get_casino_account_state(
         Returns:
             CasinoAccountState: An object containing all parsed account information.
         """
-        # Click to open the dropdown.
+        # Click to open the dropdown. ``no_wait_after=True`` defends
+        # against the orphan-promise driver crash documented on
+        # ``make_dismiss_popup`` — the toggle click typically fires a
+        # balance-fetch XHR (not a navigation), and Playwright's default
+        # post-click "wait for navigation" promise unhandled-rejects on
+        # the Node side after a few seconds, killing the driver mid-flow.
         if currency_display_config.currency_toggle_dropdown_selector:
             page.click(
                 currency_display_config.currency_toggle_dropdown_selector,
                 delay=gaussian_random_delay(),
+                no_wait_after=True,
             )
 
         # Hydration wait — same shape as simple_claim's union wait. Post-
@@ -306,6 +319,7 @@ def make_get_casino_account_state(
                             currency.activate_selector,
                             delay=gaussian_random_delay(),
                             timeout=5000,
+                            no_wait_after=True,
                         )
                         # Count-up animation settles within ~500ms; give
                         # 800ms margin so the value span has the final
@@ -365,6 +379,7 @@ def make_get_casino_account_state(
                 page.click(
                     currency_display_config.currency_toggle_switch_selector,
                     delay=gaussian_random_delay(),
+                    no_wait_after=True,
                 )
 
         # Click again to close the dropdown
@@ -372,6 +387,7 @@ def make_get_casino_account_state(
             page.click(
                 currency_display_config.currency_toggle_dropdown_selector,
                 delay=gaussian_random_delay(),
+                no_wait_after=True,
             )
 
         return CasinoAccountState(
@@ -406,6 +422,95 @@ def _find_first_visible(page: Page, selector: str) -> Optional[Locator]:
         if candidate.is_visible():
             return candidate
     return None
+
+
+def wait_and_remove(
+    page: Page,
+    selector: str,
+    label: str,
+    wait_timeout_ms: int = 5000,
+) -> bool:
+    """Wait briefly for a modal to mount, then JS-remove all matches.
+
+    Use in place of ``make_dismiss_popup`` for overlays where
+    Playwright's click-based dismiss is unreliable in patchright —
+    e.g. close-button clicks fire but the React onClose handler
+    doesn't propagate to actually unmount the modal, leaving a
+    backdrop blocking subsequent clicks. JS removal sidesteps
+    Playwright click semantics, navigation-orphan-promise risk
+    (the same gotcha ``make_pre_login_click`` defends against), and
+    React state-propagation timing entirely.
+
+    Cost: doesn't fire the modal's React ``onClose`` handler, so
+    React state is stale after removal. Fine for one-shot daily
+    runs that close the browser at the end; not appropriate for
+    long-lived sessions where the same modal might remount and
+    confuse internal state.
+
+    ``selector`` accepts a comma-separated list (Playwright's
+    ``locator(...)`` and the underlying ``querySelectorAll`` both
+    treat commas as CSS "or"), useful for modals that mount as
+    multiple body-level siblings (e.g. dialog container + separate
+    blur backdrop).
+
+    Verbose by design: logs whether the element appeared, how many
+    matches were removed, or whether nothing was visible to remove.
+    Tune log levels at the framework level if this becomes noisy
+    across many sites.
+
+    Args:
+        page: Playwright page.
+        selector: CSS selector (comma-separated lists supported)
+            for the element(s) to wait-for-then-remove.
+        label: Short human-readable name for log messages
+            (e.g. "cookie-consent", "welcome-bonus").
+        wait_timeout_ms: How long to wait for the first match to
+            become visible before giving up. Default 5000ms.
+
+    Returns:
+        True if at least one match was removed, False otherwise
+        (timeout, error, or zero matches at removal time).
+    """
+    try:
+        page.locator(selector).first.wait_for(
+            state="visible", timeout=wait_timeout_ms
+        )
+    except BrowserError:
+        log.info(
+            "[wait_and_remove:%s] not visible within %dms; nothing to remove (%s)",
+            label,
+            wait_timeout_ms,
+            selector,
+        )
+        return False
+    try:
+        n = page.evaluate(
+            "(sel) => { const els = document.querySelectorAll(sel); "
+            "els.forEach(el => el.remove()); return els.length; }",
+            selector,
+        )
+    except BrowserError as e:
+        log.warning(
+            "[wait_and_remove:%s] JS-remove failed for %s: %s",
+            label,
+            selector,
+            e,
+        )
+        return False
+    if n > 0:
+        log.info(
+            "[wait_and_remove:%s] JS-removed %d match(es) of %s",
+            label,
+            n,
+            selector,
+        )
+        return True
+    log.info(
+        "[wait_and_remove:%s] selector matched nothing at removal time (%s)",
+        label,
+        selector,
+    )
+    return False
 
 
 def make_dismiss_popup(
@@ -479,12 +584,26 @@ def make_dismiss_popup(
 
         modal = page.locator(modal_selector).first
 
+        # All three click sites below pass ``no_wait_after=True``.
+        # Dismissal clicks routinely fire side-effect requests (cookie-
+        # consent service writes, modal-close telemetry, fallback CTA
+        # navigations). Playwright's default click semantics arm a
+        # "wait for navigation" promise after each click; if no nav
+        # actually fires (it was just a fetch) the promise orphans on
+        # the Node side and unhandled-rejection-crashes the driver
+        # several seconds later — typically mid-flow during a
+        # downstream wait, with a misleading 3000ms TimeoutError. Same
+        # gotcha ``make_pre_login_click`` documents and defends against.
         # 1. Site-specific close button (fastest path when it works).
         if close_selector:
             close_btn = page.locator(close_selector).first
             try:
                 if close_btn.count() > 0 and close_btn.is_visible():
-                    close_btn.click(delay=gaussian_random_delay(), timeout=3000)
+                    close_btn.click(
+                        delay=gaussian_random_delay(),
+                        timeout=3000,
+                        no_wait_after=True,
+                    )
                     if _wait_gone(page):
                         log.info(
                             "[popup:%s] dismissed via close_selector %s",
@@ -501,7 +620,11 @@ def make_dismiss_popup(
             try:
                 cand = modal.locator(sel).first
                 if cand.count() > 0 and cand.is_visible():
-                    cand.click(delay=gaussian_random_delay(), timeout=3000)
+                    cand.click(
+                        delay=gaussian_random_delay(),
+                        timeout=3000,
+                        no_wait_after=True,
+                    )
                     if _wait_gone(page):
                         log.info("[popup:%s] dismissed via generic %s", label, sel)
                         return
@@ -525,7 +648,11 @@ def make_dismiss_popup(
             fb = page.locator(fallback_selector).first
             try:
                 if fb.count() > 0 and fb.is_visible():
-                    fb.click(delay=gaussian_random_delay(), timeout=3000)
+                    fb.click(
+                        delay=gaussian_random_delay(),
+                        timeout=3000,
+                        no_wait_after=True,
+                    )
                     log.info(
                         "[popup:%s] dismissed via fallback %s",
                         label,
@@ -890,6 +1017,11 @@ def make_modal_tab_button(
     # multi-second animation — e.g. PulszBingo's "Wheel of Winners",
     # which spins for ~6-8s before "GET MY COINS" appears.
     btn_visibility_timeout_ms: int = 5000,
+    # Per-site already-claimed marker. See MTBClaimConfig.
+    already_claimed_selector: Optional[str] = None,
+    # Hydration settle (ms) inserted between the wait_for_selector
+    # and the claim-button click. See MTBClaimConfig.pre_claim_settle_ms.
+    pre_claim_settle_ms: int = 0,
 ) -> Callable[[Page], None]:
     """Generator for claiming daily bonus via modal, tab, button pattern.
     Args:
@@ -902,6 +1034,12 @@ def make_modal_tab_button(
         btn_visibility_timeout_ms (int): Wait budget for ``btn_selector``
             to become clickable. Bump for flows where the CTA is gated
             on a multi-second animation.
+        already_claimed_selector (Optional[str]): If set, checked after
+            modal+tab clicks but before waiting for ``btn_selector``.
+            When matched (visible), logs "Daily bonus already claimed."
+            and exits cleanly. Used for sites that signal claimed-state
+            via a replacement element (e.g. a countdown timer) rather
+            than disabling the Claim button or hiding the modal trigger.
     Returns:
         Callable[[Page], None]: A function that performs the daily bonus claim action on the given page.
     """
@@ -949,17 +1087,163 @@ def make_modal_tab_button(
             )
 
         try:
-            page.click(modal_selector, delay=gaussian_random_delay(), timeout=5000)
+            # Modal-open click (button.buttonBuy / wallet button / etc.)
+            # — the canonical "stuck" site for this flow. ``safe_click``
+            # runs a stuck-detection precheck and logs structured
+            # diagnostics naming the intercepting element if anything
+            # is on top, instead of burning the full Playwright
+            # actionability-retry budget on a "<X> intercepts pointer
+            # events" loop.
+            if not safe_click(
+                page,
+                modal_selector,
+                timeout=5000,
+                max_retries=1,
+            ):
+                log.error(
+                    "Daily bonus claim failed: modal trigger %s "
+                    "(see [click_failed] / [stuck] log lines above for "
+                    "the categorized reason).",
+                    modal_selector,
+                )
+                return
             if tab_selector:
-                page.click(tab_selector, delay=gaussian_random_delay(), timeout=5000)
-            claim_btn = page.locator(btn_selector)
-            if claim_btn.is_disabled():
-                log.info("Daily bonus already claimed.")
-            else:
-                claim_btn.click(
-                    delay=gaussian_random_delay(),
+                if not safe_click(
+                    page,
+                    tab_selector,
+                    timeout=5000,
+                    max_retries=1,
+                ):
+                    log.error(
+                        "Daily bonus claim failed: tab %s "
+                        "(see [click_failed] / [stuck] log lines above for "
+                        "the categorized reason).",
+                        tab_selector,
+                    )
+                    return
+            # Wait for EITHER the claim button OR the per-site
+            # already-claimed marker to mount. Single wait avoids the
+            # tab-content render race that bit a previous attempt
+            # (``is_visible()`` returned False because the tab's
+            # contents hadn't rendered yet, even though they would
+            # have within ~500ms).
+            #
+            # Three detection paths for already-claimed state:
+            #   1. ``modal_selector`` not visible (Modo, PulszBingo) —
+            #      handled by the pre-check at the top of this fn.
+            #   2. ``btn_selector`` is_disabled() (yay, americanluck,
+            #      stake) — handled below after this wait.
+            #   3. ``already_claimed_selector`` matches (shuffle's
+            #      ``TimeRemain`` countdown that REPLACES the Claim
+            #      button) — handled below right after this wait.
+            wait_selector = (
+                f"{already_claimed_selector}, {btn_selector}"
+                if already_claimed_selector
+                else btn_selector
+            )
+            try:
+                page.wait_for_selector(
+                    wait_selector,
+                    state="attached",
                     timeout=btn_visibility_timeout_ms,
                 )
+            except BrowserError:
+                log.error(
+                    "[click_failed:%s] reason=claim_button_not_found "
+                    "(neither claim button nor already-claimed marker "
+                    "matched within %dms after modal+tab clicks; site's "
+                    "claim surface may have changed — consider setting "
+                    "or updating ``already_claimed_selector`` on the "
+                    "MTBClaimConfig)",
+                    btn_selector,
+                    btn_visibility_timeout_ms,
+                )
+                if PAUSE_ON_STUCK:
+                    log.info(
+                        "[click_failed] PAUSE_ON_STUCK set; opening "
+                        "Playwright Inspector. Click 'Resume' to "
+                        "continue (or close to abort)."
+                    )
+                    try:
+                        page.pause()
+                    except BrowserError as e:
+                        log.warning(
+                            "[click_failed] page.pause() failed (no "
+                            "display? running headless?): %s",
+                            e,
+                        )
+                return
+
+            # Hydration settle. The wait_for_selector above only
+            # confirms the claim button (or already-claimed marker)
+            # is *attached* to the DOM — React's onClick handler
+            # may not be bound yet, so a click that lands cleanly
+            # at the DOM level can still no-op server-side and
+            # leave the bonus unclaimed (we observed this on
+            # American Luck: log reported "Daily bonus claimed."
+            # but the server never registered it; first sign was
+            # the user noticing balance hadn't moved). Set
+            # ``pre_claim_settle_ms`` on MTBClaimConfig per-site
+            # to defend against this.
+            if pre_claim_settle_ms > 0:
+                log.info(
+                    "[mtb] settling %dms before claim click "
+                    "(pre_claim_settle_ms — defends against React "
+                    "hydration race)",
+                    pre_claim_settle_ms,
+                )
+                page.wait_for_timeout(pre_claim_settle_ms)
+
+            # Already-claimed marker takes precedence: if visible,
+            # we're done — log and return without trying to click
+            # a button that may not exist.
+            if already_claimed_selector:
+                try:
+                    if page.locator(already_claimed_selector).first.is_visible():
+                        log.info("Daily bonus already claimed.")
+                        return
+                except BrowserError:
+                    # Marker evaluation hiccuped — fall through to
+                    # the claim-button path rather than masking a
+                    # real failure.
+                    pass
+            # ``.first`` defends against strict-mode violations when
+            # ``btn_selector`` is a comma-union (multi-match) — in that
+            # case ``page.locator(btn_selector).is_disabled()`` would
+            # raise and bypass the safe_click diagnostics below.
+            # safe_click itself runs an explicit ambiguity precheck and
+            # logs ``[click_failed:...] reason=ambiguous_selector``, so
+            # taking ``.first`` here doesn't hide the multi-match — the
+            # downstream click is still the source of truth.
+            claim_btn = page.locator(btn_selector).first
+            try:
+                already_claimed = claim_btn.is_disabled()
+            except BrowserError as e:
+                # Disabled-state probe couldn't resolve (animation
+                # mid-flight, element removed, etc.) — fall through to
+                # safe_click, which carries its own categorized
+                # diagnostics, rather than masking a real failure.
+                log.debug(
+                    "is_disabled() probe on %s failed: %s; falling through to click",
+                    btn_selector, e,
+                )
+                already_claimed = False
+            if already_claimed:
+                log.info("Daily bonus already claimed.")
+            else:
+                if not safe_click(
+                    page,
+                    btn_selector,
+                    timeout=btn_visibility_timeout_ms,
+                    max_retries=1,
+                ):
+                    log.error(
+                        "Daily bonus claim failed: claim button %s "
+                        "(see [click_failed] / [stuck] log lines above for "
+                        "the categorized reason).",
+                        btn_selector,
+                    )
+                    return
                 wait_for_load_all_safe(page, timeout=3000)
                 # Canonical success line for runner.parse_outcome — every
                 # claim factory should emit some form of "Daily bonus
@@ -1352,6 +1636,163 @@ def wait_for_turnstile(
         return True
     except BrowserError:
         log.warning("Turnstile did not resolve within %dms total", timeout)
+        return False
+
+
+# reCAPTCHA v2 detection. The widget mounts two iframes inside its host
+# page: a visible "anchor" iframe with the checkbox, and an off-screen
+# "bframe" iframe that pops in for image challenges. The
+# ``g-recaptcha-response`` textarea (initially empty) holds the
+# resolution token once the challenge passes — its ``.value`` is the
+# canonical "solved" signal Google's JS writes for the host site to
+# pick up.
+_RECAPTCHA_DETECT_JS = """
+(() => {
+  // Match both ``google.com/recaptcha`` and ``www.recaptcha.net/recaptcha``
+  // — Google serves the widget from either domain (recaptcha.net is the
+  // EU-cookie-friendly variant; some operators serve from there to avoid
+  // the third-party-google-cookie consent prompt).
+  if (document.querySelector(
+      'iframe[src*="google.com/recaptcha"], iframe[src*="recaptcha.net/recaptcha"]'
+  )) return true;
+  if (document.querySelector('textarea[name="g-recaptcha-response"]')) return true;
+  if (typeof window.grecaptcha !== 'undefined' &&
+      document.querySelector('.g-recaptcha, [data-sitekey]')) return true;
+  return false;
+})()
+""".strip()
+
+_RECAPTCHA_SOLVED_JS = """
+(() => {
+  const ta = document.querySelector('textarea[name="g-recaptcha-response"]');
+  return !!(ta && ta.value && ta.value.length > 0);
+})()
+""".strip()
+
+
+def _click_recaptcha_checkbox(page: Page) -> bool:
+    """Click the reCAPTCHA v2 anchor-iframe checkbox.
+
+    Targets the anchor iframe via Playwright's ``frame_locator``
+    (cross-origin iframes can be addressed by selector even though
+    JS evaluation can't reach across the boundary), then clicks the
+    ``#recaptcha-anchor`` div inside. The click sends a real
+    mousedown/mouseup pair to the iframe content; Google's JS scores
+    the fingerprint and either auto-passes the token (low risk) or
+    escalates to the bframe image challenge (which we don't solve
+    headless).
+
+    Returns True if the click was issued, False if the iframe wasn't
+    addressable.
+    """
+    # Try google.com first (most common), fall through to recaptcha.net
+    # (the EU-cookie-friendly variant). Same widget, same anchor id —
+    # only the iframe ``src`` host differs.
+    for host_pattern in (
+        'iframe[src*="google.com/recaptcha/api2/anchor"]',
+        'iframe[src*="recaptcha.net/recaptcha/api2/anchor"]',
+    ):
+        try:
+            anchor = page.frame_locator(host_pattern)
+            checkbox = anchor.locator("#recaptcha-anchor")
+            if checkbox.count() > 0:
+                checkbox.click(timeout=5000)
+                log.info("Clicked reCAPTCHA checkbox (host=%s)", host_pattern)
+                return True
+        except BrowserError as e:
+            log.debug("[recaptcha] %s click attempt failed: %s", host_pattern, e)
+    log.warning("[recaptcha] no addressable anchor iframe on either host")
+    return False
+
+
+def wait_for_recaptcha(
+    page: Page,
+    timeout: int = 30000,
+    auto_click_after_ms: Optional[int] = 5000,
+) -> bool:
+    """Wait for (and optionally actively solve) a reCAPTCHA v2 checkbox challenge.
+
+    Parallel API to ``wait_for_turnstile`` but for Google reCAPTCHA.
+    Detection probes for the anchor iframe + ``grecaptcha`` global +
+    ``g-recaptcha-response`` textarea. If the textarea's value is
+    populated when we look, returns True. Otherwise waits up to
+    ``auto_click_after_ms`` for the invisible/scoring auto-pass; if
+    that doesn't fire, clicks the anchor checkbox; then waits for the
+    response token to populate within the overall ``timeout``.
+
+    A False return almost always means the checkbox click escalated to
+    the bframe image challenge — we don't ship an image solver, so
+    the caller should fail the claim and retry the flow tomorrow (or
+    surface the captcha to a human via ``--setup``).
+
+    Pass ``auto_click_after_ms=None`` to disable the active click and
+    behave like a passive waiter — useful in ``--setup`` mode where
+    a human is driving and we don't want to race them.
+
+    Args:
+        page: Playwright page.
+        timeout: Total ms to wait for resolution (covers both the
+            auto-pass grace window and any post-click settle).
+        auto_click_after_ms: Grace window for auto-pass before we
+            click the checkbox ourselves. ``None`` disables the click.
+
+    Returns:
+        True if reCAPTCHA resolved (or wasn't present). False if it
+        was present but didn't resolve in time.
+    """
+    detected = page.evaluate(_RECAPTCHA_DETECT_JS)
+    if not detected:
+        # Widgets are often injected asynchronously after a server
+        # round-trip — give Google's script a chance to mount.
+        try:
+            page.wait_for_function(_RECAPTCHA_DETECT_JS, timeout=5000)
+            detected = True
+        except BrowserError:
+            detected = False
+
+    if not detected:
+        log.debug("No reCAPTCHA detected on page")
+        return True
+
+    if page.evaluate(_RECAPTCHA_SOLVED_JS):
+        log.debug("reCAPTCHA already solved")
+        return True
+
+    log.info("reCAPTCHA v2 detected")
+
+    grace = auto_click_after_ms if auto_click_after_ms is not None else timeout
+    grace = max(0, min(grace, timeout))
+    if grace > 0:
+        try:
+            log.info(
+                "Waiting up to %dms for reCAPTCHA invisible/scoring pass...",
+                grace,
+            )
+            page.wait_for_function(_RECAPTCHA_SOLVED_JS, timeout=grace)
+            log.info("reCAPTCHA auto-passed")
+            return True
+        except BrowserError:
+            pass
+
+    if auto_click_after_ms is None:
+        log.info("Auto-click disabled; waiting passively for token...")
+    else:
+        if not _click_recaptcha_checkbox(page):
+            log.warning(
+                "Couldn't click reCAPTCHA checkbox; falling back to passive wait"
+            )
+
+    remaining = max(1000, timeout - grace)
+    try:
+        page.wait_for_function(_RECAPTCHA_SOLVED_JS, timeout=remaining)
+        log.info("reCAPTCHA resolved")
+        return True
+    except BrowserError:
+        log.warning(
+            "reCAPTCHA did not resolve within %dms total — likely "
+            "escalated to image challenge (not supported headless).",
+            timeout,
+        )
         return False
 
 
@@ -2010,6 +2451,71 @@ def wait_for_clickable(
         return False
 
 
+def check_click_intercept(page: Page, selector: str) -> Optional[Dict]:
+    """Detect whether something is on top of ``selector``'s click point.
+
+    Uses ``document.elementFromPoint`` at the target's bounding-box
+    center to identify what would actually receive a click. Returns
+    None if the target (or one of its descendants) is on top — i.e.
+    clickable. Otherwise returns a diagnostic dict so callers can
+    log *what* blocked them instead of just retrying blind.
+
+    The diagnostic is the same shape the manual probes we used during
+    the SLNGApp-family debugging session produced: target rect, the
+    element actually on top, and a 5-deep ancestor chain so a class
+    like ``.dialog-container`` can be traced back to its semantic
+    parent. Returns None on any error (selector missing, zero-size
+    element, etc.) — caller's normal click-then-wait path handles
+    those cases.
+
+    Returns:
+        ``None`` if not intercepted (clickable), else ``dict`` with
+        keys ``target_selector``, ``target_rect`` (x/y/w/h/cx/cy),
+        ``intercepted_by`` (tag/className/id/position/zIndex), and
+        ``ancestor_chain`` (list of up to 5 ancestors).
+    """
+    try:
+        info = page.evaluate(
+            """(sel) => {
+                const el = document.querySelector(sel);
+                if (!el) return null;
+                const r = el.getBoundingClientRect();
+                if (r.width === 0 || r.height === 0) return null;
+                const cx = r.x + r.width / 2;
+                const cy = r.y + r.height / 2;
+                const top = document.elementFromPoint(cx, cy);
+                if (!top) return null;
+                if (top === el || el.contains(top)) return null;
+                const ancestors = [];
+                let n = top;
+                while (n && ancestors.length < 5) {
+                    const cs = getComputedStyle(n);
+                    ancestors.push({
+                        tag: n.tagName,
+                        className: (n.className || '').toString().slice(0, 200),
+                        id: n.id,
+                        position: cs.position,
+                        zIndex: cs.zIndex,
+                    });
+                    n = n.parentElement;
+                }
+                return {
+                    target_rect: {x: r.x, y: r.y, w: r.width, h: r.height, cx, cy},
+                    intercepted_by: ancestors[0],
+                    ancestor_chain: ancestors,
+                };
+            }""",
+            selector,
+        )
+    except BrowserError as e:
+        log.debug("check_click_intercept(%s) failed: %s", selector, e)
+        return None
+    if info is None:
+        return None
+    info["target_selector"] = selector
+    return info
+
+
 def safe_click(
     page: Page,
     selector: str,
@@ -2018,8 +2524,10 @@ def safe_click(
     delay: Optional[int] = None,
     force: bool = False,
     scroll_into_view: bool = True,
+    detect_intercept: bool = True,
+    pause_on_stuck: bool = PAUSE_ON_STUCK,
 ) -> bool:
-    """Perform a click operation with timeout and retry logic.
+    """Perform a click operation with timeout, retry, and stuck-detection.
 
     Args:
         page (Page): The Playwright page object.
@@ -2028,17 +2536,130 @@ def safe_click(
         max_retries (int, optional): Maximum number of retry attempts. Defaults to MAX_CLICK_RETRIES.
         delay (int, optional): Click delay in milliseconds. If None, uses gaussian_random_delay().
         force (bool, optional): Whether to force the click. Defaults to False.
+            Implicitly disables ``detect_intercept`` (force-click bypasses
+            actionability checks anyway).
         scroll_into_view (bool, optional): Whether to scroll element into view first. Defaults to True.
+        detect_intercept (bool, optional): Run ``check_click_intercept``
+            before each attempt. On detected intercept, log a structured
+            warning naming the blocker (its tag, className, z-index, and
+            ancestor chain) and return False without burning the full
+            Playwright actionability-retry budget. Default True; pass
+            False for the rare case where a transient intercept is
+            expected and you'd rather let Playwright retry through it.
+        pause_on_stuck (bool, optional): On detected intercept, call
+            ``page.pause()`` to drop into Playwright's Inspector for
+            interactive debugging. Defaults to env-var-driven
+            ``PAUSE_ON_STUCK`` (controlled by ``--pause-on-stuck``
+            on runner.py). Inspector needs a display — don't pair
+            with ``--headless``.
 
     Returns:
-        bool: True if click succeeded, False otherwise.
+        bool: True if click succeeded, False otherwise (intercepted,
+        not clickable, or all retries exhausted).
     """
     if delay is None:
         delay = gaussian_random_delay()
 
+    # Once-only fast-fail prechecks — categorize each failure with an
+    # actionable ``[click_failed:%s] reason=...`` line so callers (and
+    # log readers) can tell intercept/not-found/ambiguous/disabled apart
+    # without parsing Playwright's stack-trace prose. Retry budget is
+    # reserved for transient cases (visibility / stability races).
+    if not force:
+        # 1. Intercept — something else on top of the click point.
+        if detect_intercept:
+            intercept = check_click_intercept(page, selector)
+            if intercept:
+                blocker = intercept["intercepted_by"]
+                log.warning(
+                    "[stuck] %s click intercepted by <%s class=%r id=%r "
+                    "position=%s z-index=%s>; rect=%s; ancestor chain=%s",
+                    selector,
+                    blocker["tag"],
+                    blocker["className"],
+                    blocker["id"],
+                    blocker["position"],
+                    blocker["zIndex"],
+                    intercept["target_rect"],
+                    intercept["ancestor_chain"],
+                )
+                if pause_on_stuck:
+                    log.info(
+                        "[stuck] PAUSE_ON_STUCK set; opening Playwright "
+                        "Inspector. Click 'Resume' in the inspector to "
+                        "continue (or close it to abort)."
+                    )
+                    try:
+                        page.pause()
+                    except BrowserError as e:
+                        log.warning(
+                            "[stuck] page.pause() failed (no display? "
+                            "running headless?): %s",
+                            e,
+                        )
+                log.error(
+                    "[click_failed:%s] reason=intercepted "
+                    "blocker=<%s class=%r>",
+                    selector,
+                    blocker["tag"],
+                    blocker["className"],
+                )
+                return False
+
+        # 2. Selector validity — wait briefly for the element to attach
+        # (covers modal-open animations and lazy-rendered components),
+        # then check for true not-found vs ambiguous-multi-match.
+        # The 2s grace replaces an immediate ``count()`` check that was
+        # too aggressive when ``safe_click`` is called right after a
+        # click that opens a modal — the tab/button inside often takes
+        # 100-500ms to mount and the immediate count returned 0.
+        # Note: ``wait_for_selector`` returns immediately when the
+        # element is already present, so no cost on the common case.
+        try:
+            page.wait_for_selector(selector, state="attached", timeout=2000)
+        except BrowserError:
+            log.error(
+                "[click_failed:%s] reason=not_found "
+                "(selector matched zero elements within 2s grace window)",
+                selector,
+            )
+            return False
+        try:
+            n_matches = page.locator(selector).count()
+        except BrowserError:
+            n_matches = 1  # fall through to retry loop on ambiguous error
+        if n_matches > 1:
+            log.error(
+                "[click_failed:%s] reason=ambiguous_selector matches=%d "
+                "(Playwright strict mode rejects multi-match — narrow the "
+                "selector or append .first / :nth-of-type(N))",
+                selector,
+                n_matches,
+            )
+            return False
+
+        # 3. Disabled state — element exists and is alone, but is
+        # explicitly disabled (e.g. claim-once button after the claim).
+        # Skip if the caller already disambiguated via their own
+        # is_disabled() (idempotent — just logs and bails fast here).
+        try:
+            if page.locator(selector).is_disabled():
+                log.warning(
+                    "[click_failed:%s] reason=disabled "
+                    "(element exists but ``disabled`` attribute is set)",
+                    selector,
+                )
+                return False
+        except BrowserError:
+            # is_disabled can raise on detached / animating elements;
+            # let the retry loop's own checks handle that case.
+            pass
+
+    # Retry loop — handles transient visibility / stability races and
+    # Playwright click-time exceptions. The hopeless cases above already
+    # short-circuited.
     for attempt in range(max_retries):
         try:
-            # Wait for element to be clickable
             if not force and not wait_for_clickable(
                 page, selector, timeout, scroll_into_view
             ):
@@ -2055,20 +2676,41 @@ def safe_click(
                     page.wait_for_timeout(backoff_time)
                     continue
                 else:
+                    log.error(
+                        "[click_failed:%s] reason=not_clickable_after_%d_attempts",
+                        selector,
+                        max_retries,
+                    )
                     return False
 
-            # Perform the click
-            page.click(selector, delay=delay, timeout=timeout, force=force)
+            # Perform the click. ``no_wait_after=True`` is the same
+            # orphan-promise defense documented on ``make_dismiss_popup``:
+            # without it, Playwright arms a "wait for navigation" promise
+            # post-click that unhandled-rejects on the Node side after a
+            # few seconds when the click was a side-effect XHR rather
+            # than a navigation, killing the driver mid-flow. Modal-open
+            # / tab / activator clicks rarely navigate, so we default
+            # this on for all safe_click users. (For login submit the
+            # framework follows up with an explicit ``wait_for_url``
+            # anyway, so dropping the implicit nav-wait is fine.)
+            page.click(
+                selector,
+                delay=delay,
+                timeout=timeout,
+                force=force,
+                no_wait_after=True,
+            )
             log.debug("Successfully clicked %s on attempt %d", selector, attempt + 1)
             return True
 
         except Exception as e:
+            err_msg = str(e)[:200]
             log.warning(
                 "Click failed on attempt %d/%d for %s: %s",
                 attempt + 1,
                 max_retries,
                 selector,
-                str(e)[:100],
+                err_msg,
             )
 
             if attempt < max_retries - 1:
@@ -2077,7 +2719,11 @@ def safe_click(
                 log.info("Waiting %dms before retry", backoff_time)
                 page.wait_for_timeout(backoff_time)
             else:
-                log.error("All click attempts failed for %s", selector)
+                log.error(
+                    "[click_failed:%s] reason=exception details=%s",
+                    selector,
+                    err_msg,
+                )
                 return False
 
     return False
@@ -2179,6 +2825,34 @@ class MTBClaimConfig:
     # flows where the CTA only appears after a multi-second animation
     # (PulszBingo's wheel spins ~6-8s before "GET MY COINS" renders).
     btn_visibility_timeout_ms: int = 5000
+    # Per-site marker for already-claimed state. Checked AFTER the
+    # modal+tab clicks but BEFORE waiting for ``btn_selector`` —
+    # if any matching element is visible, log "Daily bonus already
+    # claimed." and exit cleanly. Required for sites whose
+    # already-claimed surface differs from both the framework's
+    # built-in detection paths:
+    #   1. ``modal_selector`` not visible (Modo, PulszBingo) — daily
+    #      trigger button literally disappears post-claim.
+    #   2. ``btn_selector`` is_disabled() (yay, americanluck, stake) —
+    #      Claim button stays mounted but ``disabled`` attribute set.
+    # Shuffle.us is a third pattern: Claim button is REMOVED from DOM
+    # entirely, replaced by a "TimeRemain" countdown
+    # ("5h 58m 32s until claim") — set this to
+    # ``'p[class*="TimeRemain_timeRemain"]'`` to detect it cleanly
+    # instead of triggering a [click_failed:claim_button_not_found]
+    # every day after the first claim.
+    already_claimed_selector: Optional[str] = None
+    # Settle wait (ms) inserted between the modal-open click and the
+    # claim-button click. Defends against React hydration races where
+    # the claim button is in the DOM (and Playwright clicks land on
+    # it cleanly) but the React onClick handler hasn't been bound yet
+    # — the click event registers as "successful" while nothing fires
+    # server-side, leaving the bonus unclaimed even though the log
+    # reports "Daily bonus claimed." (no error path is taken because
+    # safe_click returns True). American Luck's free-coin-dialog needs
+    # ~1500ms; sites with synchronous handler binding can leave this
+    # at 0.
+    pre_claim_settle_ms: int = 0
 
 
 @dataclass
@@ -2233,9 +2907,23 @@ class CasinoConfig:
     # Required: Currency display configuration
     currency_display: CurrencyDisplayConfig
 
-    # Required: Bonus claiming configuration (choose one pattern)
-    claim_config: MTBClaimConfig | GenericClaimConfig | SimpleClaimConfig
+    # Bonus claiming configuration (choose one pattern). Optional only
+    # when ``custom_claim_action`` is provided below; one of the two
+    # must be set or ``make_casino_automation`` raises at construction
+    # time.
+    claim_config: Optional[MTBClaimConfig | GenericClaimConfig | SimpleClaimConfig] = None
     claim_pattern: Literal["mtb", "generic", "simple"] = "mtb"
+
+    # Optional: Custom claim action. Use this for sites whose claim
+    # flow doesn't fit any of the built-in MTB / Simple / Generic
+    # patterns — e.g. McLuck, where a Cloudflare Turnstile mounts
+    # mid-claim and requires a solve + re-click of the claim button.
+    # When set, the dispatch in ``make_casino_automation`` skips
+    # ``claim_config`` entirely. The callable should emit the
+    # canonical "Daily bonus claimed." / "Daily bonus already
+    # claimed." log lines so the runner's outcome parser categorizes
+    # the run correctly.
+    custom_claim_action: Optional[Callable[[Page], None]] = None
 
     # Optional: Custom balance parser. Use this for sites whose
     # currency-toggle pattern doesn't fit the default
