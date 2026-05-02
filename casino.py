@@ -1207,8 +1207,28 @@ def make_modal_tab_button(
                     # the claim-button path rather than masking a
                     # real failure.
                     pass
-            claim_btn = page.locator(btn_selector)
-            if claim_btn.is_disabled():
+            # ``.first`` defends against strict-mode violations when
+            # ``btn_selector`` is a comma-union (multi-match) — in that
+            # case ``page.locator(btn_selector).is_disabled()`` would
+            # raise and bypass the safe_click diagnostics below.
+            # safe_click itself runs an explicit ambiguity precheck and
+            # logs ``[click_failed:...] reason=ambiguous_selector``, so
+            # taking ``.first`` here doesn't hide the multi-match — the
+            # downstream click is still the source of truth.
+            claim_btn = page.locator(btn_selector).first
+            try:
+                already_claimed = claim_btn.is_disabled()
+            except BrowserError as e:
+                # Disabled-state probe couldn't resolve (animation
+                # mid-flight, element removed, etc.) — fall through to
+                # safe_click, which carries its own categorized
+                # diagnostics, rather than masking a real failure.
+                log.debug(
+                    "is_disabled() probe on %s failed: %s; falling through to click",
+                    btn_selector, e,
+                )
+                already_claimed = False
+            if already_claimed:
                 log.info("Daily bonus already claimed.")
             else:
                 if not safe_click(
@@ -1628,7 +1648,13 @@ def wait_for_turnstile(
 # pick up.
 _RECAPTCHA_DETECT_JS = """
 (() => {
-  if (document.querySelector('iframe[src*="google.com/recaptcha"]')) return true;
+  // Match both ``google.com/recaptcha`` and ``www.recaptcha.net/recaptcha``
+  // — Google serves the widget from either domain (recaptcha.net is the
+  // EU-cookie-friendly variant; some operators serve from there to avoid
+  // the third-party-google-cookie consent prompt).
+  if (document.querySelector(
+      'iframe[src*="google.com/recaptcha"], iframe[src*="recaptcha.net/recaptcha"]'
+  )) return true;
   if (document.querySelector('textarea[name="g-recaptcha-response"]')) return true;
   if (typeof window.grecaptcha !== 'undefined' &&
       document.querySelector('.g-recaptcha, [data-sitekey]')) return true;
@@ -1659,17 +1685,23 @@ def _click_recaptcha_checkbox(page: Page) -> bool:
     Returns True if the click was issued, False if the iframe wasn't
     addressable.
     """
-    try:
-        anchor = page.frame_locator(
-            'iframe[src*="google.com/recaptcha/api2/anchor"]'
-        )
-        checkbox = anchor.locator("#recaptcha-anchor")
-        if checkbox.count() > 0:
-            checkbox.click(timeout=5000)
-            log.info("Clicked reCAPTCHA checkbox")
-            return True
-    except BrowserError as e:
-        log.warning("[recaptcha] checkbox click failed: %s", e)
+    # Try google.com first (most common), fall through to recaptcha.net
+    # (the EU-cookie-friendly variant). Same widget, same anchor id —
+    # only the iframe ``src`` host differs.
+    for host_pattern in (
+        'iframe[src*="google.com/recaptcha/api2/anchor"]',
+        'iframe[src*="recaptcha.net/recaptcha/api2/anchor"]',
+    ):
+        try:
+            anchor = page.frame_locator(host_pattern)
+            checkbox = anchor.locator("#recaptcha-anchor")
+            if checkbox.count() > 0:
+                checkbox.click(timeout=5000)
+                log.info("Clicked reCAPTCHA checkbox (host=%s)", host_pattern)
+                return True
+        except BrowserError as e:
+            log.debug("[recaptcha] %s click attempt failed: %s", host_pattern, e)
+    log.warning("[recaptcha] no addressable anchor iframe on either host")
     return False
 
 

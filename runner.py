@@ -148,7 +148,12 @@ class RunResult:
     # Empty dict if the script crashed before emitting an Account State
     # line.
     balances: Dict[str, float]
-    claim_outcome: str  # claimed | already_claimed | skipped | error | unknown
+    # ``claimed | already_claimed | skipped | error | unknown`` for the
+    # default capturing path (parsed from the child's stdout/stderr); set
+    # to ``streamed`` when the runner is invoked with ``--stream`` and
+    # the child's output went straight to the terminal — in that mode
+    # we have no parsed outcome and skip the JSONL history append.
+    claim_outcome: str
     stdout_tail: str
     stderr_tail: str
 
@@ -269,10 +274,16 @@ def run_site(site: Site, opts: argparse.Namespace) -> RunResult:
     # framework's public reference configs (spinquest, stake_us)
     # without forcing the bundle to ship duplicates.
     module_path = _resolve_module_path(site.module, opts.config_dir)
-    assert module_path is not None, (
-        f"site {site.id} module {site.module}.py vanished between "
-        f"preflight and run"
-    )
+    # Use a real exception rather than ``assert`` so the guard still
+    # fires under ``python -O`` (which strips asserts). This branch is
+    # purely defensive — preflight already checked module presence —
+    # but a stripped assert would surface as a less clear failure
+    # downstream (subprocess exec on a None path).
+    if module_path is None:
+        raise FileNotFoundError(
+            f"site {site.id} module {site.module}.py vanished between "
+            f"preflight and run"
+        )
     cmd = [sys.executable, str(module_path)]
     # ``--google-oauth`` resolves from either the seed's per-site
     # ``auth="oauth"`` default or the runner-level ``--google-oauth``
@@ -638,7 +649,12 @@ def main() -> int:
 
     print()
     ok_count = sum(r.ok for r in results)
-    print(f"Summary: {ok_count}/{len(results)} ok  (history -> {opts.log_file})")
+    # --stream mode skips the JSONL append (see the loop above), so the
+    # "history -> ..." trailer would lie. Drop it in that case.
+    if opts.stream:
+        print(f"Summary: {ok_count}/{len(results)} ok  (history not written: --stream)")
+    else:
+        print(f"Summary: {ok_count}/{len(results)} ok  (history -> {opts.log_file})")
     return 0 if ok_count == len(results) else 1
 
 

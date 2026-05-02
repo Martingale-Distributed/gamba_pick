@@ -240,26 +240,32 @@ def create_spinquest_config() -> CasinoConfig:
         claim_pattern="simple",
 
         requires_2fa=False,
-        # Switched from ``camoufox`` (Firefox-based) to patchright Chromium
-        # in 2026-05-01. Empirical: real Firefox + Camoufox both get
-        # blocked by SpinQuest's GeoComply check ("not in legal
-        # jurisdiction"); user's regular Chrome is allowed on the same
-        # IP. Same machine, same network — engine-level fingerprint
-        # divergence (most likely WebRTC ICE-candidate handling, where
-        # Firefox is privacy-conservative and GeoComply's SDK was
-        # expecting Chrome-shape data). Switching backends drops
-        # ``geoip=True`` (Camoufox-only stealth feature) but real
-        # Chromium is naturally coherent with the user's real IP, so
-        # the auto-correlation isn't needed. The ``_grant_geo``
-        # permission grant in ``pre_login`` still applies — it's a
-        # context permission, not engine-specific. Profile invalidated
-        # by the swap (Firefox profile layout ≠ Chrome): re-run
-        # ``--setup`` to bootstrap a fresh authenticated profile in
-        # Chromium.
+        # Switched from ``camoufox`` (Firefox-based) to the system's
+        # installed Chrome on 2026-05-01. Empirical: real Firefox +
+        # Camoufox both get blocked by SpinQuest's GeoComply check
+        # ("not in legal jurisdiction"); the user's regular Chrome is
+        # allowed on the same IP. Same machine, same network —
+        # engine-level fingerprint divergence (most likely WebRTC
+        # ICE-candidate handling, where Firefox is privacy-conservative
+        # and GeoComply's SDK was expecting Chrome-shape data).
         #
-        # Fallback if patchright Chromium also gets flagged: add
-        # ``real_chrome=True`` to use the system's installed Chrome
-        # binary (most realistic fingerprint).
+        # ``browser_backend="chrome"`` + ``real_chrome=True`` together
+        # mean: launch the system-installed Chrome via patchright
+        # rather than patchright's bundled Chromium. The bundled
+        # Chromium is closer to vanilla and could plausibly also pass
+        # GeoComply, but the user's real Chrome is the empirically
+        # verified path. If GeoComply ever escalates beyond what real
+        # Chrome can pass, there's nothing more aggressive to fall
+        # back to in-process.
+        #
+        # Switching off Camoufox drops ``geoip=True`` (a Camoufox-only
+        # stealth feature), but real Chrome is naturally coherent with
+        # the user's real IP — no auto-correlation needed. The
+        # ``_grant_geo`` permission grant in ``pre_login`` still
+        # applies (it's a context permission, not engine-specific).
+        # Profile invalidated by the swap (Firefox profile layout ≠
+        # Chrome): re-run ``--setup`` to bootstrap a fresh
+        # authenticated profile.
         real_chrome=True,
         browser_backend="chrome",
         # SpinQuest's lobby + balance hydration is the slowest of the
