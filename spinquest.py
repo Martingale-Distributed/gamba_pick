@@ -59,7 +59,14 @@ def open_login_modal(page: Page) -> None:
     try:
         btn = page.locator("button.loginBtn").first
         if btn.count() > 0 and btn.is_visible():
-            btn.click(delay=gaussian_random_delay(), timeout=5000)
+            # ``no_wait_after=True`` — modal-open click, no navigation;
+            # see make_dismiss_popup commentary for the orphan-promise
+            # gotcha.
+            btn.click(
+                delay=gaussian_random_delay(),
+                timeout=5000,
+                no_wait_after=True,
+            )
             page.wait_for_timeout(800)
             log.info("Opened SpinQuest login modal")
         else:
@@ -124,10 +131,14 @@ def read_spinquest_balances(page: Page) -> CasinoAccountState:
     for i in range(2):
         if i > 0:
             try:
+                # ``no_wait_after=True`` defends against the orphan-
+                # promise driver crash documented on
+                # ``make_dismiss_popup``.
                 page.click(
                     amounts_btn_selector,
                     delay=gaussian_random_delay(),
                     timeout=5000,
+                    no_wait_after=True,
                 )
                 toggles_done += 1
                 # Brief wait for the value display to update after
@@ -175,7 +186,12 @@ def read_spinquest_balances(page: Page) -> CasinoAccountState:
     # back; an even count (including zero) is already balanced.
     if toggles_done % 2 == 1:
         try:
-            page.click(amounts_btn_selector, delay=gaussian_random_delay(), timeout=5000)
+            page.click(
+                amounts_btn_selector,
+                delay=gaussian_random_delay(),
+                timeout=5000,
+                no_wait_after=True,
+            )
         except BrowserError:
             pass
 

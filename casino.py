@@ -233,11 +233,17 @@ def make_get_casino_account_state(
         Returns:
             CasinoAccountState: An object containing all parsed account information.
         """
-        # Click to open the dropdown.
+        # Click to open the dropdown. ``no_wait_after=True`` defends
+        # against the orphan-promise driver crash documented on
+        # ``make_dismiss_popup`` — the toggle click typically fires a
+        # balance-fetch XHR (not a navigation), and Playwright's default
+        # post-click "wait for navigation" promise unhandled-rejects on
+        # the Node side after a few seconds, killing the driver mid-flow.
         if currency_display_config.currency_toggle_dropdown_selector:
             page.click(
                 currency_display_config.currency_toggle_dropdown_selector,
                 delay=gaussian_random_delay(),
+                no_wait_after=True,
             )
 
         # Hydration wait — same shape as simple_claim's union wait. Post-
@@ -313,6 +319,7 @@ def make_get_casino_account_state(
                             currency.activate_selector,
                             delay=gaussian_random_delay(),
                             timeout=5000,
+                            no_wait_after=True,
                         )
                         # Count-up animation settles within ~500ms; give
                         # 800ms margin so the value span has the final
@@ -372,6 +379,7 @@ def make_get_casino_account_state(
                 page.click(
                     currency_display_config.currency_toggle_switch_selector,
                     delay=gaussian_random_delay(),
+                    no_wait_after=True,
                 )
 
         # Click again to close the dropdown
@@ -379,6 +387,7 @@ def make_get_casino_account_state(
             page.click(
                 currency_display_config.currency_toggle_dropdown_selector,
                 delay=gaussian_random_delay(),
+                no_wait_after=True,
             )
 
         return CasinoAccountState(
@@ -1010,6 +1019,9 @@ def make_modal_tab_button(
     btn_visibility_timeout_ms: int = 5000,
     # Per-site already-claimed marker. See MTBClaimConfig.
     already_claimed_selector: Optional[str] = None,
+    # Hydration settle (ms) inserted between the wait_for_selector
+    # and the claim-button click. See MTBClaimConfig.pre_claim_settle_ms.
+    pre_claim_settle_ms: int = 0,
 ) -> Callable[[Page], None]:
     """Generator for claiming daily bonus via modal, tab, button pattern.
     Args:
@@ -1161,6 +1173,26 @@ def make_modal_tab_button(
                             e,
                         )
                 return
+
+            # Hydration settle. The wait_for_selector above only
+            # confirms the claim button (or already-claimed marker)
+            # is *attached* to the DOM — React's onClick handler
+            # may not be bound yet, so a click that lands cleanly
+            # at the DOM level can still no-op server-side and
+            # leave the bonus unclaimed (we observed this on
+            # American Luck: log reported "Daily bonus claimed."
+            # but the server never registered it; first sign was
+            # the user noticing balance hadn't moved). Set
+            # ``pre_claim_settle_ms`` on MTBClaimConfig per-site
+            # to defend against this.
+            if pre_claim_settle_ms > 0:
+                log.info(
+                    "[mtb] settling %dms before claim click "
+                    "(pre_claim_settle_ms — defends against React "
+                    "hydration race)",
+                    pre_claim_settle_ms,
+                )
+                page.wait_for_timeout(pre_claim_settle_ms)
 
             # Already-claimed marker takes precedence: if visible,
             # we're done — log and return without trying to click
@@ -2619,8 +2651,23 @@ def safe_click(
                     )
                     return False
 
-            # Perform the click
-            page.click(selector, delay=delay, timeout=timeout, force=force)
+            # Perform the click. ``no_wait_after=True`` is the same
+            # orphan-promise defense documented on ``make_dismiss_popup``:
+            # without it, Playwright arms a "wait for navigation" promise
+            # post-click that unhandled-rejects on the Node side after a
+            # few seconds when the click was a side-effect XHR rather
+            # than a navigation, killing the driver mid-flow. Modal-open
+            # / tab / activator clicks rarely navigate, so we default
+            # this on for all safe_click users. (For login submit the
+            # framework follows up with an explicit ``wait_for_url``
+            # anyway, so dropping the implicit nav-wait is fine.)
+            page.click(
+                selector,
+                delay=delay,
+                timeout=timeout,
+                force=force,
+                no_wait_after=True,
+            )
             log.debug("Successfully clicked %s on attempt %d", selector, attempt + 1)
             return True
 
@@ -2763,6 +2810,17 @@ class MTBClaimConfig:
     # instead of triggering a [click_failed:claim_button_not_found]
     # every day after the first claim.
     already_claimed_selector: Optional[str] = None
+    # Settle wait (ms) inserted between the modal-open click and the
+    # claim-button click. Defends against React hydration races where
+    # the claim button is in the DOM (and Playwright clicks land on
+    # it cleanly) but the React onClick handler hasn't been bound yet
+    # — the click event registers as "successful" while nothing fires
+    # server-side, leaving the bonus unclaimed even though the log
+    # reports "Daily bonus claimed." (no error path is taken because
+    # safe_click returns True). American Luck's free-coin-dialog needs
+    # ~1500ms; sites with synchronous handler binding can leave this
+    # at 0.
+    pre_claim_settle_ms: int = 0
 
 
 @dataclass

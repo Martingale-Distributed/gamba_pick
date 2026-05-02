@@ -161,6 +161,7 @@ def make_casino_automation(
             close_btn_selector=config.claim_config.close_btn_selector,
             btn_visibility_timeout_ms=config.claim_config.btn_visibility_timeout_ms,
             already_claimed_selector=config.claim_config.already_claimed_selector,
+            pre_claim_settle_ms=config.claim_config.pre_claim_settle_ms,
         )
     elif config.claim_pattern == "simple":
         if not isinstance(config.claim_config, SimpleClaimConfig):
