@@ -48,6 +48,7 @@ from typing import Dict, List, Optional
 ROOT = Path(__file__).parent
 SEED_FILE = ROOT / "sites_seed.toml"
 LOG_FILE = ROOT / "claim_history.jsonl"
+CLAIMS_CSV = ROOT / "claims.csv"
 
 DEFAULT_TIMEOUT_S = 300  # 5 min per site
 
@@ -440,6 +441,49 @@ def append_history(result: RunResult, log_path: Path = LOG_FILE) -> None:
         f.write(json.dumps(asdict(result)) + "\n")
 
 
+def _append_csv_row(site: Site, result: RunResult, csv_path: Path) -> None:
+    """Translate a runner ``RunResult`` into a ``ClaimRow`` and append.
+
+    Picks the primary currency value from ``result.balances`` according
+    to ``site.primary_currency``; everything else lands in
+    ``secondary_balances``. If the primary isn't in the parsed balances
+    (e.g. a crash before the Account State line emitted), ``balance``
+    and ``currency`` are blank and *all* parsed balances go into
+    ``secondary_balances``.
+    """
+    from gamba_pick.csv_writer import ClaimRow, append_claim_row
+
+    primary_code = site.primary_currency
+    primary_value = result.balances.get(primary_code)
+    if primary_value is not None:
+        secondary = {
+            code: val for code, val in result.balances.items()
+            if code != primary_code
+        }
+        currency = primary_code
+    else:
+        secondary = dict(result.balances)
+        currency = ""
+
+    # ``ts`` on RunResult is already ISO-8601 UTC; date is the calendar
+    # day in UTC. Don't try to localize — claim_history is UTC and the
+    # CSV should match.
+    date = result.ts.split("T", 1)[0] if "T" in result.ts else result.ts
+
+    row = ClaimRow(
+        run_ts=result.ts,
+        date=date,
+        site=site.id,
+        balance=primary_value,
+        currency=currency,
+        secondary_balances=secondary,
+        duration_s=result.duration_s,
+        success=result.ok,
+        claim_outcome=result.claim_outcome,
+    )
+    append_claim_row(row, csv_path=csv_path)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run daily claims across working casino sites."
@@ -533,6 +577,21 @@ def main() -> int:
             "output) — use the canonical capturing path for "
             "production sweeps."
         ),
+    )
+    parser.add_argument(
+        "--no-csv",
+        action="store_true",
+        help=(
+            "Skip the claims.csv append for this run. JSONL history "
+            "still writes — that's the debugging artifact, not the "
+            "customer-facing balance log."
+        ),
+    )
+    parser.add_argument(
+        "--claims-csv",
+        type=Path,
+        default=CLAIMS_CSV,
+        help="Append-only customer-facing balance log (CSV).",
     )
     parser.add_argument(
         "--dry-run",
@@ -639,6 +698,8 @@ def main() -> int:
         # always go through the capturing path.
         if not opts.stream:
             append_history(result, opts.log_file)
+            if not opts.no_csv:
+                _append_csv_row(site, result, opts.claims_csv)
         flag = "ok" if result.ok else ("timeout" if result.timed_out else "fail")
         # Render balances in alphabetical order for deterministic
         # output (matches CasinoAccountState.__str__).

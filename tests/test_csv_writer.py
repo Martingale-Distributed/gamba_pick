@@ -150,3 +150,81 @@ def test_read_last_balance_for_site_with_no_matching_rows(tmp_path: Path):
     csv_path = tmp_path / "claims.csv"
     append_claim_row(_make_row(site="zula_casino", balance=12.10), csv_path=csv_path)
     assert read_last_balance_for_site(csv_path, "sportzino") is None
+
+
+def test_runner_helper_picks_primary_and_routes_secondary(tmp_path: Path):
+    """The runner's _append_csv_row picks site.primary_currency for the
+    primary balance and routes the rest into secondary_balances."""
+    from runner import Site, RunResult, _append_csv_row
+
+    site = Site(
+        id="sportzino",
+        name="Sportzino",
+        url="https://sportzino.com",
+        status="working",
+        auth="form",
+        module="sportzino",
+        primary_currency="SC",
+    )
+    result = RunResult(
+        ts="2026-05-02T12:00:00+00:00",
+        site_id="sportzino",
+        module="sportzino",
+        ok=True,
+        exit_code=0,
+        duration_s=9.2,
+        timed_out=False,
+        balances={"SC": 3.84, "GC": 43562260.0},
+        claim_outcome="claimed",
+        stdout_tail="",
+        stderr_tail="",
+    )
+    csv_path = tmp_path / "claims.csv"
+
+    _append_csv_row(site, result, csv_path)
+
+    import csv as _csv
+    with open(csv_path, newline="") as f:
+        row = next(_csv.DictReader(f))
+    assert row["balance"] == "3.84"
+    assert row["currency"] == "SC"
+    assert json.loads(row["secondary_balances"]) == {"GC": 43562260.0}
+
+
+def test_runner_helper_with_missing_primary_routes_all_to_secondary(tmp_path: Path):
+    """If the primary currency isn't in the balances, balance/currency are blank
+    and ALL balances go into secondary_balances."""
+    from runner import Site, RunResult, _append_csv_row
+
+    site = Site(
+        id="fortune_wins",
+        name="Fortune Wins",
+        url="https://fortunewins.com",
+        status="working",
+        auth="form",
+        module="fortune_wins",
+        primary_currency="FC",
+    )
+    result = RunResult(
+        ts="2026-05-02T12:00:00+00:00",
+        site_id="fortune_wins",
+        module="fortune_wins",
+        ok=True,
+        exit_code=0,
+        duration_s=9.2,
+        timed_out=False,
+        balances={"SC": 3.84, "GC": 43562260.0},  # no FC parsed
+        claim_outcome="claimed",
+        stdout_tail="",
+        stderr_tail="",
+    )
+    csv_path = tmp_path / "claims.csv"
+
+    _append_csv_row(site, result, csv_path)
+
+    import csv as _csv
+    with open(csv_path, newline="") as f:
+        row = next(_csv.DictReader(f))
+    assert row["balance"] == ""
+    assert row["currency"] == ""
+    assert json.loads(row["secondary_balances"]) == {"SC": 3.84, "GC": 43562260.0}
