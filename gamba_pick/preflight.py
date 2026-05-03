@@ -109,3 +109,45 @@ def check_site_credentials(
     # Don't block the run on this; the site script will fail with a clearer
     # error when it tries to log in.
     return None
+
+
+def run_preflight(
+    *,
+    sites: list[dict],
+    env: dict,
+    profiles_dir: Path,
+) -> list[RemediationItem]:
+    """Walk every site and aggregate missing-setup items.
+
+    ``sites`` is a list of dicts with ``id`` and ``auth`` keys (subset of
+    Site fields — keeps preflight independent of the runner's dataclass).
+    """
+    items: list[RemediationItem] = []
+    for site in sites:
+        item = check_site_credentials(
+            site_id=site["id"],
+            auth=site.get("auth", "oauth"),
+            env=env,
+            profiles_dir=profiles_dir,
+        )
+        if item is not None:
+            items.append(item)
+    return items
+
+
+def format_remediation(items: list[RemediationItem]) -> str:
+    """Format the remediation list as a human-readable block.
+
+    Empty list → empty string. Otherwise: a numbered list of actions
+    followed by the "Setup incomplete: N step(s) remaining" trailer
+    and the "When done, ..." nudge.
+    """
+    if not items:
+        return ""
+    lines = ["Setup is not complete. Take these steps and re-run:", ""]
+    for i, item in enumerate(items, start=1):
+        lines.append(f"  {i}. [{item.site_id}] {item.action}")
+    lines.append("")
+    lines.append(f"Setup incomplete: {len(items)} step(s) remaining.")
+    lines.append("When done, run ./run.sh again to start your daily claim.")
+    return "\n".join(lines)

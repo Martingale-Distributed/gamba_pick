@@ -103,3 +103,67 @@ def test_check_site_oauth_populated_profile_dir(tmp_path: Path):
         profiles_dir=profiles,
     )
     assert item is None
+
+
+def test_run_preflight_all_ready_returns_empty(tmp_path: Path):
+    from gamba_pick.preflight import run_preflight
+
+    profiles = tmp_path / "profiles"
+    (profiles / "pulsz").mkdir(parents=True)
+    (profiles / "pulsz" / "cookies").write_text("x")
+
+    items = run_preflight(
+        sites=[
+            {"id": "sportzino", "auth": "form"},
+            {"id": "pulsz", "auth": "oauth"},
+        ],
+        env={
+            "SPORTZINO_USERNAME": "u",
+            "SPORTZINO_PASSWORD": "p",
+        },
+        profiles_dir=profiles,
+    )
+    assert items == []
+
+
+def test_run_preflight_aggregates_misses(tmp_path: Path):
+    from gamba_pick.preflight import run_preflight
+
+    items = run_preflight(
+        sites=[
+            {"id": "sportzino", "auth": "form"},
+            {"id": "pulsz", "auth": "oauth"},
+        ],
+        env={},
+        profiles_dir=tmp_path / "profiles",
+    )
+    site_ids = {item.site_id for item in items}
+    assert site_ids == {"sportzino", "pulsz"}
+
+
+def test_format_remediation_empty_returns_empty_string(tmp_path: Path):
+    from gamba_pick.preflight import format_remediation
+    assert format_remediation([]) == ""
+
+
+def test_format_remediation_lists_each_action(tmp_path: Path):
+    from gamba_pick.preflight import format_remediation, RemediationItem
+
+    items = [
+        RemediationItem(
+            site_id="sportzino",
+            reason="missing credentials",
+            action="Edit picks.env and add: SPORTZINO_USERNAME=...; SPORTZINO_PASSWORD=...",
+        ),
+        RemediationItem(
+            site_id="pulsz",
+            reason="OAuth profile not bootstrapped",
+            action="Bootstrap login for pulsz: ./run.sh --setup pulsz",
+        ),
+    ]
+    out = format_remediation(items)
+    assert "sportzino" in out
+    assert "pulsz" in out
+    assert "SPORTZINO_USERNAME" in out
+    assert "--setup pulsz" in out
+    assert "Setup incomplete: 2 step(s) remaining" in out
