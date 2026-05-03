@@ -20,7 +20,7 @@ keywords = [
     "playwright",
     "browser",
 ]
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 classifiers = [
     "Operating System :: OS Independent",
     "Development Status :: 4 - Beta",
