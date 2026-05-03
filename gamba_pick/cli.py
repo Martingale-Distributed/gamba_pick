@@ -263,7 +263,10 @@ def main(argv: list[str] | None = None) -> int:
         except SystemExit as e:
             return int(e.code) if e.code is not None else 1
     elif catalog_action.message:
-        print(catalog_action.message)
+        # The "no catalog found, reference configs only" hint is misleading
+        # when the dev passed --config-dir; suppress it in that case.
+        if args.config_dir is None:
+            print(catalog_action.message)
 
     # Load seed (reference). If catalog has its own seed, merge.
     sites = _load_seed(args.seed_file)
@@ -393,6 +396,8 @@ def _do_sweep(args, working: list[dict], extra_config_dir: Optional[Path]) -> in
     print(f"gamba-pick {__version__} — daily claim sweep")
     if extra_config_dir is not None:
         print(f"Catalog: loaded ({len(working)} site(s) configured)")
+    elif args.config_dir is not None:
+        print(f"Configs from {args.config_dir} ({len(working)} site(s) configured)")
     else:
         print(f"Reference configs only ({len(working)} site(s) configured)")
     print()

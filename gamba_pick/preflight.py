@@ -108,9 +108,23 @@ def check_site_credentials(
             ),
         )
     if auth == "oauth":
-        profile = profiles_dir / site_id
-        if profile.exists() and profile.is_dir() and any(profile.iterdir()):
-            return None
+        # The actual profile dir slug is derived from CasinoConfig.name in
+        # the site script (cf. _default_oauth_profile_dir), which doesn't
+        # always match the seed's ``id``. e.g. zula_casino → "ZulaCasino"
+        # → slug ``zulacasino``. Try multiple candidates: the seed id,
+        # plus the URL-apex prefix (handles the zulacasino case), plus an
+        # explicit override field if the seed declares one.
+        candidates = [profiles_dir / site_id]
+        if url:
+            from urllib.parse import urlparse
+            netloc = urlparse(url).netloc
+            if netloc:
+                url_slug = netloc.split(".")[0].lower()
+                if url_slug != site_id:
+                    candidates.append(profiles_dir / url_slug)
+        for profile in candidates:
+            if profile.exists() and profile.is_dir() and any(profile.iterdir()):
+                return None
         return RemediationItem(
             site_id=site_id,
             reason="OAuth profile not bootstrapped",
