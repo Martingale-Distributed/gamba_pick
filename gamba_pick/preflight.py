@@ -89,9 +89,12 @@ def check_site_credentials(
     ``site_id.upper()`` for callers that don't pass a URL.
     """
     if url:
-        from urllib.parse import urlparse
-        netloc = urlparse(url).netloc
-        site_key = netloc.split(".")[0].upper() if netloc else site_id.upper()
+        # Delegate to casino.url_to_env_prefix (lazy import — casino.py is
+        # heavy and pulls in playwright/scrapling). Keeping the prefix
+        # derivation in one place means the preflight remediation message
+        # always names the same env var the site script will read.
+        from gamba_pick.casino import url_to_env_prefix
+        site_key = url_to_env_prefix(url) or site_id.upper()
     else:
         site_key = site_id.upper()
     if auth == "form":
@@ -116,12 +119,10 @@ def check_site_credentials(
         # explicit override field if the seed declares one.
         candidates = [profiles_dir / site_id]
         if url:
-            from urllib.parse import urlparse
-            netloc = urlparse(url).netloc
-            if netloc:
-                url_slug = netloc.split(".")[0].lower()
-                if url_slug != site_id:
-                    candidates.append(profiles_dir / url_slug)
+            from gamba_pick.casino import url_to_env_prefix
+            url_slug = url_to_env_prefix(url).lower()
+            if url_slug and url_slug != site_id:
+                candidates.append(profiles_dir / url_slug)
         for profile in candidates:
             if profile.exists() and profile.is_dir() and any(profile.iterdir()):
                 return None

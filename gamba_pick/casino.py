@@ -2293,6 +2293,12 @@ def make_simple_claim_button(
 def url_to_env_prefix(url: str) -> str:
     """Convert a URL to an environment variable prefix.
 
+    Strips a leading ``www.`` so ``https://www.mcluck.com`` and
+    ``https://mcluck.com`` produce the same ``MCLUCK`` prefix — the seed
+    sometimes records the marketing-www form while the site script's
+    ``CasinoConfig.url`` uses the apex form, and the env-var name should
+    not depend on which one a caller passed.
+
     Args:
         url (str): The URL to convert.
 
@@ -2301,6 +2307,8 @@ def url_to_env_prefix(url: str) -> str:
     """
     parsed_url = urlparse(url)
     netloc = parsed_url.netloc
+    if netloc.startswith("www."):
+        netloc = netloc[len("www."):]
 
     prefix = netloc.split(".")[0]
     return prefix.upper()
