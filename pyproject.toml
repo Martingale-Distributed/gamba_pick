@@ -61,6 +61,10 @@ shell = [
     "IPython>=8.3.0",     # The last version that supports Python 3.10
     "markdownify>=1.2.0",
 ]
+test = [
+    "pytest>=8.0",
+    "pytest-mock>=3.12",
+]
 
 [project.urls]
 Homepage = "https://github.com/Martingale-Distributed/gamba_pick"
