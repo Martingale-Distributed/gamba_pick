@@ -132,6 +132,13 @@ class Site:
     # fires shortly after the DONE marker rather than waiting out
     # the global default.
     timeout_s: Optional[int] = None
+    # Currency code that goes into the ``balance`` / ``currency`` columns
+    # of claims.csv. Other parsed currencies land in
+    # ``secondary_balances``. Defaults to "SC" — the redeemable currency
+    # in the sweepstakes-casino model that covers most of our sites.
+    # Override per-site for non-SC sites (e.g. "FC" for FortuneWins,
+    # "USDT" for Stake.us).
+    primary_currency: str = "SC"
 
 
 @dataclass
