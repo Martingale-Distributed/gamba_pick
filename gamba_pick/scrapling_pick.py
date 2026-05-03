@@ -25,13 +25,13 @@ from scrapling.fetchers import StealthySession
 from scrapling.cli import log
 from datetime import datetime
 
-from casino import (
+from gamba_pick.casino import (
     CLICK_TIMEOUT_MS,
     MAX_CLICK_RETRIES,
     HANG_DETECTION_SECONDS,
     MAX_KENO_ITERATIONS,
 )
-from casino import (
+from gamba_pick.casino import (
     get_credentials,
     google_oauth_login_page_make,
     load_env_file,

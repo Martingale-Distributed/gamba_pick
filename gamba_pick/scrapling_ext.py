@@ -1,4 +1,4 @@
-from casino import (
+from gamba_pick.casino import (
     BrowserError,
     CasinoConfig,
     CasinoAccountState,
@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Callable, Optional, Dict
 from playwright.sync_api import Page
 
-from selectors_generic import HEADER_LOGIN_BUTTON as _GENERIC_HEADER_LOGIN_BUTTON
+from gamba_pick.selectors_generic import HEADER_LOGIN_BUTTON as _GENERIC_HEADER_LOGIN_BUTTON
 from scrapling.fetchers import DynamicSession, StealthySession
 from scrapling.engines.toolbelt.custom import Response
 from scrapling.cli import log

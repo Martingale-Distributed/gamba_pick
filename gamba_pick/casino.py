@@ -22,7 +22,7 @@ from functools import lru_cache
 # pin a specific selector. Lives in its own module so we have a single
 # source of truth across action factories — see selectors_generic.py
 # for the philosophy (fail-loud-when-explicit, fall-back-when-unset).
-from selectors_generic import (
+from gamba_pick.selectors_generic import (
     GOOGLE_OAUTH_BUTTON as _GENERIC_GOOGLE_OAUTH_BUTTON,
     MODAL_CLOSE_BUTTON as _GENERIC_MODAL_CLOSE_BUTTON,
     TURNSTILE_CHECKBOX_OFFSET as _TURNSTILE_CHECKBOX_OFFSET,
