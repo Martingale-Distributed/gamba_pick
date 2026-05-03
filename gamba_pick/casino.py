@@ -1022,6 +1022,10 @@ def make_modal_tab_button(
     # Hydration settle (ms) inserted between the wait_for_selector
     # and the claim-button click. See MTBClaimConfig.pre_claim_settle_ms.
     pre_claim_settle_ms: int = 0,
+    # Optional follow-up click in the same modal chain. See
+    # MTBClaimConfig.post_claim_btn_selector.
+    post_claim_btn_selector: Optional[str] = None,
+    post_claim_settle_ms: int = 0,
 ) -> Callable[[Page], None]:
     """Generator for claiming daily bonus via modal, tab, button pattern.
     Args:
@@ -1245,6 +1249,37 @@ def make_modal_tab_button(
                     )
                     return
                 wait_for_load_all_safe(page, timeout=3000)
+                # Optional follow-up click. Sites whose claim flow has a
+                # post-CTA confirmation step (e.g. PulszBingo's Wheel of
+                # Winners: ``GET MY COINS`` reveals the prize, then a
+                # separate ``Claim`` button credits it) wire this in via
+                # MTBClaimConfig.post_claim_btn_selector. The canonical
+                # "Daily bonus claimed." log is deferred until this also
+                # succeeds — so a missing follow-up surfaces as an error,
+                # not a false-positive "claimed" run.
+                if post_claim_btn_selector:
+                    if post_claim_settle_ms > 0:
+                        log.info(
+                            "[mtb] settling %dms before post-claim click",
+                            post_claim_settle_ms,
+                        )
+                        page.wait_for_timeout(post_claim_settle_ms)
+                    if not safe_click(
+                        page,
+                        post_claim_btn_selector,
+                        timeout=btn_visibility_timeout_ms,
+                        max_retries=1,
+                    ):
+                        log.error(
+                            "Daily bonus claim failed: post-claim button %s "
+                            "(see [click_failed] / [stuck] log lines above for "
+                            "the categorized reason). Main claim button was "
+                            "clicked successfully but the follow-up confirmation "
+                            "did not — the bonus may not have been credited.",
+                            post_claim_btn_selector,
+                        )
+                        return
+                    wait_for_load_all_safe(page, timeout=3000)
                 # Canonical success line for runner.parse_outcome — every
                 # claim factory should emit some form of "Daily bonus
                 # claimed." so the runner can categorize without per-flow
@@ -2861,6 +2896,21 @@ class MTBClaimConfig:
     # ~1500ms; sites with synchronous handler binding can leave this
     # at 0.
     pre_claim_settle_ms: int = 0
+    # Optional second click in the same modal/popup chain. Used by sites
+    # whose claim flow has a follow-up confirmation button after the
+    # initial CTA — e.g. PulszBingo's Wheel of Winners: clicking
+    # "GET MY COINS" reveals a prize, then a separate "Claim" button
+    # actually credits the bonus to the account. If unset, the claim
+    # completes after ``btn_selector`` is clicked (the common case).
+    # If set, the framework defers the canonical "Daily bonus claimed."
+    # log line until this click also succeeds — so a missing/changed
+    # follow-up button surfaces as an error, not a false-positive
+    # "claimed" run.
+    post_claim_btn_selector: Optional[str] = None
+    # Settle wait (ms) inserted between the main claim click and the
+    # post-claim click, to let the follow-up button render. Tuned per
+    # site. Only meaningful when ``post_claim_btn_selector`` is set.
+    post_claim_settle_ms: int = 0
 
 
 @dataclass
