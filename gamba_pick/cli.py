@@ -50,7 +50,12 @@ from gamba_pick.preflight import (
 # Default paths — assume cwd is the gamba-pick install root (where the
 # bootstrap script cd's to).
 DEFAULT_ROOT = Path.cwd()
-DEFAULT_SEED = DEFAULT_ROOT / "sites_seed.toml"
+# Framework reference seed lives next to the gamba_pick package, NOT cwd —
+# so a dev running ``uv run gamba-pick`` from outside the repo still finds
+# the canonical reference seed. Bundle seeds (.gpcat) and user --seed-file
+# entries merge on top of this base.
+FRAMEWORK_SEED = Path(__file__).resolve().parent.parent / "sites_seed.toml"
+DEFAULT_SEED = FRAMEWORK_SEED
 DEFAULT_CATALOG_DIR = DEFAULT_ROOT / "catalog"
 DEFAULT_PROFILES_DIR = DEFAULT_ROOT / "profiles"
 DEFAULT_CLAIMS_CSV = DEFAULT_ROOT / "claims.csv"
@@ -268,8 +273,18 @@ def main(argv: list[str] | None = None) -> int:
         if args.config_dir is None:
             print(catalog_action.message)
 
-    # Load seed (reference). If catalog has its own seed, merge.
-    sites = _load_seed(args.seed_file)
+    # Load seeds, layered base→override:
+    #   1. Framework reference seed (always loaded if present).
+    #   2. ``--seed-file`` if it points somewhere other than the framework seed.
+    #   3. Decrypted bundle seed (highest priority).
+    # Each layer overrides the previous on shared site ids, so a paying
+    # customer's bundle wins over the framework's reference, and a dev's
+    # ``--seed-file`` wins over the framework but loses to a real bundle.
+    sites: list[dict] = []
+    if FRAMEWORK_SEED.exists():
+        sites = _load_seed(FRAMEWORK_SEED)
+    if args.seed_file != FRAMEWORK_SEED:
+        sites = _merge_seeds(sites, _load_seed(args.seed_file))
     if extra_config_dir is not None:
         bundle_seed = extra_config_dir / "sites_seed.toml"
         if bundle_seed.exists():
