@@ -630,7 +630,24 @@ def main() -> int:
             "the bundle's TOML."
         ),
     )
+    parser.add_argument(
+        "--summary",
+        type=int,
+        nargs="?",
+        const=30,
+        default=None,
+        metavar="N",
+        help=(
+            "Print the one-row-per-day-per-site rollup of claims.csv "
+            "for the last N days (default 30). Read-only; no execution."
+        ),
+    )
     opts = parser.parse_args()
+
+    if opts.summary is not None:
+        from gamba_pick.csv_summary import render_summary
+        print(render_summary(opts.claims_csv, days=opts.summary))
+        return 0
 
     # ``--setup`` implies ``--stream``: setup mode blocks on user
     # input (OAuth flow / "press Enter when done" prompts), so the
