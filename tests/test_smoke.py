@@ -39,3 +39,9 @@ def test_reference_configs_importable():
         assert result.returncode == 0, (
             f"reference config {name} failed to parse:\n{result.stderr}"
         )
+
+
+def test_cli_entrypoint_resolves():
+    """The ``gamba-pick`` console script entrypoint imports + is callable."""
+    from gamba_pick import cli
+    assert callable(cli.main)
