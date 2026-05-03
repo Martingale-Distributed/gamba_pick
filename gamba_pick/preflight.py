@@ -76,13 +76,24 @@ def check_site_credentials(
     auth: str,
     env: dict,
     profiles_dir: Path,
+    url: Optional[str] = None,
 ) -> Optional[RemediationItem]:
     """Return a RemediationItem describing what's missing, or None if ready.
 
-    For ``auth="form"``: checks for <SITE_ID>_USERNAME and <SITE_ID>_PASSWORD.
+    For ``auth="form"``: checks for <SITE_KEY>_USERNAME and <SITE_KEY>_PASSWORD.
     For ``auth="oauth"``: checks for a non-empty ``profiles/<site_id>/`` dir.
+
+    When ``url`` is provided the env-var prefix is derived from the netloc
+    (matching ``casino.url_to_env_prefix`` logic) so the remediation message
+    names the same env var the site script will actually read.  Falls back to
+    ``site_id.upper()`` for callers that don't pass a URL.
     """
-    site_key = site_id.upper()
+    if url:
+        from urllib.parse import urlparse
+        netloc = urlparse(url).netloc
+        site_key = netloc.split(".")[0].upper() if netloc else site_id.upper()
+    else:
+        site_key = site_id.upper()
     if auth == "form":
         username_key = f"{site_key}_USERNAME"
         password_key = f"{site_key}_PASSWORD"
@@ -129,6 +140,7 @@ def run_preflight(
             auth=site.get("auth", "oauth"),
             env=env,
             profiles_dir=profiles_dir,
+            url=site.get("url"),
         )
         if item is not None:
             items.append(item)

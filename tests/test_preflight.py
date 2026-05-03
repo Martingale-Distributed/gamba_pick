@@ -167,3 +167,38 @@ def test_format_remediation_lists_each_action(tmp_path: Path):
     assert "SPORTZINO_USERNAME" in out
     assert "--setup pulsz" in out
     assert "Setup incomplete: 2 step(s) remaining" in out
+
+
+# ---- URL-derived env prefix ----
+
+def test_check_site_credentials_uses_url_derived_prefix(tmp_path: Path):
+    """When site has a URL, env prefix should be derived from the netloc
+    via url_to_env_prefix logic (matching what the actual site scripts use)."""
+    from gamba_pick.preflight import check_site_credentials
+
+    item = check_site_credentials(
+        site_id="stake_us",
+        auth="form",
+        env={},
+        profiles_dir=tmp_path / "profiles",
+        url="https://stake.us",
+    )
+    assert item is not None
+    # Should ask for STAKE_USERNAME (URL-derived), NOT STAKE_US_USERNAME (id-derived)
+    assert "STAKE_USERNAME" in item.action
+    assert "STAKE_US_USERNAME" not in item.action
+
+
+def test_check_site_credentials_url_takes_precedence_over_id(tmp_path: Path):
+    """For shuffle_us (id) at https://shuffle.us, prefix should be SHUFFLE."""
+    from gamba_pick.preflight import check_site_credentials
+
+    # Provide credentials matching the URL-derived prefix.
+    item = check_site_credentials(
+        site_id="shuffle_us",
+        auth="form",
+        env={"SHUFFLE_USERNAME": "u", "SHUFFLE_PASSWORD": "p"},
+        profiles_dir=tmp_path / "profiles",
+        url="https://shuffle.us",
+    )
+    assert item is None  # creds satisfied via URL-derived prefix
