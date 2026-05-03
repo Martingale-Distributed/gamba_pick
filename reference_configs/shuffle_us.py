@@ -42,7 +42,7 @@ Usage
 python shuffle_us.py [--headless] [--google-oauth] [--skip-claim]
 """
 
-from casino import (
+from gamba_pick.casino import (
     CasinoConfig,
     Currency,
     CurrencyDisplayConfig,
@@ -52,7 +52,7 @@ from casino import (
     get_arg_parser,
     make_handle_google_one_tap_popup,
 )
-from scrapling_ext import make_casino_automation
+from gamba_pick.scrapling_ext import make_casino_automation
 
 
 def create_shuffle_us_config() -> CasinoConfig:

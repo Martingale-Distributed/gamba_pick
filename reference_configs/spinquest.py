@@ -33,7 +33,7 @@ from typing import Dict
 
 from playwright.sync_api import Page
 
-from casino import (
+from gamba_pick.casino import (
     BrowserError,
     CasinoAccountState,
     CasinoConfig,
@@ -46,7 +46,7 @@ from casino import (
     log,
     make_grant_geolocation_permission,
 )
-from scrapling_ext import make_casino_automation
+from gamba_pick.scrapling_ext import make_casino_automation
 
 
 def open_login_modal(page: Page) -> None:

@@ -5,9 +5,9 @@ from playwright.sync_api import (
 from scrapling.fetchers import StealthySession
 from scrapling.engines.toolbelt.custom import Response
 from scrapling.cli import log
-from scrapling_pick import get_credentials
+from gamba_pick.scrapling_pick import get_credentials
 
-from casino import (
+from gamba_pick.casino import (
     get_arg_parser,
     CasinoAccountState,
     CurrencyDisplayConfig,

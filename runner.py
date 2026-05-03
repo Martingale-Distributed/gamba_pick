@@ -164,23 +164,22 @@ def load_sites(path: Path = SEED_FILE) -> List[Site]:
     return [Site(**s) for s in data["site"]]
 
 
-def _resolve_module_path(module: str, config_dir: Optional[Path]) -> Optional[Path]:
-    """Find ``<module>.py`` in the external config dir, then in ROOT.
+REFERENCE_CONFIGS_DIR = ROOT / "reference_configs"
 
-    Returns the first existing path or ``None`` if neither location has
-    it. ROOT is the gamba_pick install — the framework's public
-    reference configs (spinquest, stake_us) live there and stay
-    reachable when the runner is pointed at an external bundle, so a
-    single comprehensive seed can mix both without forcing duplicates
-    into the bundle.
+
+def _resolve_module_path(module: str, config_dir: Optional[Path]) -> Optional[Path]:
+    """Find ``<module>.py`` in (a) the external --config-dir, (b) the
+    bundled reference_configs/, then give up.
+
+    Returns the first existing path or ``None``.
     """
     if config_dir is not None:
         external = (config_dir / f"{module}.py").resolve()
         if external.exists():
             return external
-    in_tree = ROOT / f"{module}.py"
-    if in_tree.exists():
-        return in_tree
+    bundled = REFERENCE_CONFIGS_DIR / f"{module}.py"
+    if bundled.exists():
+        return bundled
     return None
 
 
