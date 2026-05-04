@@ -47,7 +47,7 @@
 id = "spinquest"
 name = "SpinQuest"
 url = "https://spinquest.com"
-status = "working"
+status = "broken"
 auth = "form"
 module = "spinquest"
 primary_currency = "SC"

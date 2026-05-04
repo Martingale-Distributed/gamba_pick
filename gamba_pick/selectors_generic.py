@@ -62,9 +62,20 @@ TURNSTILE_WIDGET: tuple[str, ...] = (
     "div.cf-turnstile",
     "div#cf_turnstile",
     "div#cf-turnstile",
+    "div #cf_turnstile",                          # Pick-site descendant pattern (scrapling-compatible)
+    "div #cf-turnstile",
+    "#cf_turnstile",                              # Bare-id fallback (any tag)
+    "#cf-turnstile",
+    "#dynamicCaptchaBox",                         # Pick-site dynamic captcha host (faucet *.io family)
+    "#captcha_container",                         # Pick-site outer captcha container
     "div.login-turnstile",                        # Sportzino / Zula wrapper
     ".login-form-content-turnstile",              # Other SLNGApp-platform layouts
     "[class*='turnstile-container']",
+    # Note: the CF Turnstile iframe does NOT have a src containing
+    # "challenges.cloudflare.com" — that URL only appears in the api.js
+    # <script> tag. The rendered iframe uses a data: URL and postMessage
+    # for its content. Detection still uses the script-URL substring;
+    # this selector is kept as a last-ditch hint for non-CF iframes.
     "iframe[src*='challenges.cloudflare.com']",
 )
 

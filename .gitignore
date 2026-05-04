@@ -115,3 +115,5 @@ cloudflare_debug.html
 
 # runner.py output — append-only run history
 claim_history.jsonl
+.bootstrap-done
+claims.csv

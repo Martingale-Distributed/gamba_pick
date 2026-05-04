@@ -266,8 +266,7 @@ def create_spinquest_config() -> CasinoConfig:
         # Profile invalidated by the swap (Firefox profile layout ≠
         # Chrome): re-run ``--setup`` to bootstrap a fresh
         # authenticated profile.
-        real_chrome=True,
-        browser_backend="chrome",
+        # browser_backend="camoufox",
         # SpinQuest's lobby + balance hydration is the slowest of the
         # working set (login submit → cookies → navigate → React init →
         # balance fetch chain regularly takes 30-50s). Bumping

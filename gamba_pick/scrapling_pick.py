@@ -37,6 +37,7 @@ from gamba_pick.casino import (
     load_env_file,
     wait_for_load_all_safe,
     wait_for_clickable,
+    wait_for_turnstile,
     safe_click,
     url_to_env_prefix,
     gaussian_random_delay,
@@ -890,6 +891,92 @@ def parse_account_state_res(res: Response, currency: str = "UNK") -> AccountStat
     )
 
 
+def ensure_captcha_is_turnstile(page: Page) -> None:
+    """Switch the login page's captcha provider to Cloudflare Turnstile.
+
+    Pick sites added a ``<select id="select_captcha">`` (options 0=IconCaptcha,
+    1=reCAPTCHA, 2=hCaptcha, 3=Turnstile, 4=pCaptcha) and started defaulting
+    new accounts to IconCaptcha — a 5-icon "pick the odd one out" puzzle that
+    our existing Turnstile-wait flow can't handle. The provider preference
+    appears to persist server-side, so the switch sticks across sessions and
+    this becomes a one-time no-op afterward.
+
+    Has to run *before* ``page.fill`` for the credentials: the change handler
+    may reload or rerender the form, which would wipe filled values. Falls
+    through silently when the select isn't present (older builds, post-switch
+    pages, OAuth path).
+    """
+    select_selector = "select#select_captcha"
+    try:
+        select = page.locator(select_selector).first
+        if select.count() == 0:
+            return
+        current = select.input_value()
+        if current == "3":
+            log.debug("Captcha already on Turnstile; no switch needed")
+            return
+        log.info(
+            "Switching captcha from option %s to Turnstile (3)", current
+        )
+        select.select_option("3")
+        # Settle window for the AJAX form-rerender.
+        page.wait_for_timeout(1500)
+        # CF api.js was loaded with ``render=explicit&onload=initTurnstileLazy``,
+        # so it doesn't auto-scan — the page's own JS has to call
+        # ``turnstile.render()`` (or its named init) into ``#dynamicCaptchaBox``.
+        # That call is the site's change handler; it didn't fire because
+        # ``select_option`` dispatches synthetic native events while jQuery
+        # handlers (which these PHP sites use) only respond to jQuery's
+        # ``.trigger('change')``. Try jQuery first, then the named init,
+        # then dump anything else we find for diagnosis.
+        wake_js = """() => {
+          const log = [];
+          // 1. jQuery change trigger — most likely path for these sites.
+          if (window.jQuery && window.jQuery('#select_captcha').length) {
+            try {
+              window.jQuery('#select_captcha').val('3').trigger('change');
+              log.push('jquery_change');
+            } catch (e) {
+              log.push('jq_failed: ' + e.message);
+            }
+          } else {
+            log.push('no_jquery');
+          }
+          // 2. Direct invocation of the onload callback.
+          if (typeof window.initTurnstileLazy === 'function') {
+            try {
+              window.initTurnstileLazy();
+              log.push('init_called');
+            } catch (e) {
+              log.push('init_failed: ' + e.message);
+            }
+          } else {
+            log.push('no_initTurnstileLazy');
+          }
+          // 3. Inventory of any other turnstile/captcha globals.
+          const globals = Object.keys(window).filter(k =>
+            /turnstile|captcha/i.test(k) && typeof window[k] === 'function'
+          );
+          if (globals.length) log.push('globals=' + globals.join(','));
+          // 4. Post-trigger state of the dynamic container.
+          const dyn = document.getElementById('dynamicCaptchaBox');
+          if (dyn) {
+            log.push('dynBox children=' + dyn.children.length +
+                     ' w=' + dyn.offsetWidth + ' h=' + dyn.offsetHeight);
+          }
+          return log.join(' | ');
+        }"""
+        try:
+            wake_result = page.evaluate(wake_js)
+            log.info("Turnstile wake-up: %s", wake_result)
+        except Exception as e:
+            log.warning("Turnstile wake-up evaluate failed: %s", e)
+        # Give the widget time to inject the iframe and lay out.
+        page.wait_for_timeout(3000)
+    except Exception as e:
+        log.warning("Captcha switch failed (continuing anyway): %s", e)
+
+
 def login_page_make(
     username: str,
     password: str,
@@ -931,16 +1018,34 @@ def login_page_make(
             # claim_attempted["value"] = True
             return
 
+        # Sites started defaulting to IconCaptcha; flip back to Turnstile
+        # before filling credentials in case the swap rerenders the form.
+        ensure_captcha_is_turnstile(page)
+
         page.fill("input[id='user_email']", username)
         page.fill("input[id='password']", password)
 
-        try:
-            page.locator(box_selector).scroll_into_view_if_needed(timeout=2000)
-            page.locator(box_selector).wait_for(state="visible", timeout=2000)
-            log.debug("Turnstile box detected.")
-            wait_for_load_all_safe(page)
-        except Exception:
-            log.debug("No turnstile box detected.")
+        # Active solve. ``solve_cloudflare=True`` on StealthySession only
+        # runs during ``session.fetch`` (before this page_action), so it
+        # misses widgets that mount after the captcha-provider switch.
+        # ``wait_for_turnstile`` detects the widget, waits for invisible
+        # auto-pass, and clicks the checkbox itself if the grace expires.
+        # ``auto_click_after_ms=10000`` is double the default to absorb the
+        # post-switch iframe mount; the previous 5s grace ended before the
+        # checkbox surface was positioned, so the active-click branch ran
+        # against a not-yet-visible widget and gave up.
+        # ``checkbox_offset=(46, 25)`` overrides the global ``(26, 25)``:
+        # pick-site ``#dynamicCaptchaBox`` is 364px wide (vs the widget's
+        # ~300px) with the widget inset ~20px from the wrapper's left,
+        # so the global offset clicks short of the checkbox. Mirrors
+        # scrapling's per-URL hack but as a clean per-call argument.
+        wait_for_turnstile(
+            page,
+            timeout=10000,
+            auto_click_after_ms=3000,
+            checkbox_offset=(46, 25),
+        )
+        wait_for_load_all_safe(page)
 
         page.click(login_button_selector, delay=gaussian_random_delay())
 
@@ -982,6 +1087,8 @@ def make_claim_faucet(
         try:
             page.locator(selector).scroll_into_view_if_needed(timeout=2000)
             page.locator(selector).wait_for(state="visible", timeout=2000)
+            ensure_captcha_is_turnstile(page)
+            wait_for_turnstile(page, timeout=10000, auto_click_after_ms=3000, checkbox_offset=(455, 25))
             page.wait_for_timeout(
                 gaussian_random_delay(mean=500, stddev=100)
             )  # Wait for some time, because.

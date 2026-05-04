@@ -1456,7 +1456,8 @@ _TURNSTILE_DETECT_JS = """() => {
     document.querySelector('div.cf-turnstile') ||
     document.querySelector('[data-sitekey]') ||
     document.querySelector('div.login-turnstile') ||
-    document.querySelector('.login-form-content-turnstile')
+    document.querySelector('.login-form-content-turnstile') ||
+    document.querySelector('div[data-sentry-component="CloudflareTurnstile"]')
   );
 }"""
 
@@ -1511,49 +1512,153 @@ def _detect_turnstile_kind(page: Page) -> Optional[str]:
     return None
 
 
-def _find_turnstile_widget(page: Page) -> Optional[Locator]:
-    """Locate a visible Turnstile widget container on the page.
+def _find_turnstile_widget_rect(page: Page) -> Optional[dict]:
+    """Find the Turnstile widget rect by querying the live DOM via JS.
 
-    Tries a list of common selectors in priority order and returns the
-    first visible match. Returns None if no widget is visible — the
-    caller should treat that as "challenge already gone or never rendered".
+    Returns ``{x, y, width, height, selector}`` for the first selector that
+    matches an element with a non-zero rect, or None if nothing visible.
+
+    Why JS-evaluate instead of ``page.locator(...).bounding_box()``: the
+    Playwright/Camoufox layer can lie about layout for elements with
+    iframe children or unusual flex/display setups — we've observed
+    ``bounding_box()`` returning None on pick-site ``<div id="cf_turnstile">``
+    hosts that are clearly rendered. ``getBoundingClientRect()`` from
+    inside the page is the layout source of truth and never lies.
     """
-    for selector in _TURNSTILE_WIDGET_SELECTORS:
-        try:
-            loc = page.locator(selector).first
-            if loc.count() > 0 and loc.is_visible():
-                log.debug("Found Turnstile widget via selector: %s", selector)
-                return loc
-        except BrowserError:
-            continue
-    return None
+    selectors_js = list(_TURNSTILE_WIDGET_SELECTORS)
+    js = """(selectors) => {
+      for (const sel of selectors) {
+        let el;
+        try { el = document.querySelector(sel); } catch (e) { continue; }
+        if (!el) continue;
+        // Prefer the iframe child if present — the iframe IS the widget
+        // surface (~300x65). The matched element may be a wider wrapper
+        // (e.g. pick-site #dynamicCaptchaBox at 364px) where the widget
+        // sits centered or aligned-right, so wrapper.x + checkbox_offset
+        // lands in the wrapper's padding, not on the checkbox. Using the
+        // iframe's own rect makes the offset (26, 25) hit the checkbox
+        // regardless of wrapper layout — no per-URL coord hacks needed.
+        const iframe = el.tagName === 'IFRAME' ? el : el.querySelector('iframe');
+        const target = iframe || el;
+        const r = target.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) {
+          return {
+            x: r.x, y: r.y, width: r.width, height: r.height,
+            selector: sel + (iframe && iframe !== el ? ' > iframe' : ''),
+          };
+        }
+      }
+      return null;
+    }"""
+    try:
+        rect = page.evaluate(js, selectors_js)
+    except BrowserError:
+        return None
+    if rect:
+        log.info("Found Turnstile widget rect: %s (%dx%d)",
+                 rect.get("selector"), rect.get("width"), rect.get("height"))
+    return rect
 
 
-def _click_turnstile_checkbox(page: Page, widget: Locator) -> bool:
-    """Click the visible checkbox inside a located Turnstile widget.
+def _dump_turnstile_dom_info(page: Page) -> None:
+    """Diagnostic: log what's actually in the page when find_rect failed.
+
+    Called when ``_find_turnstile_widget_rect`` returns None despite
+    detection saying Turnstile is present. Surfaces three things the
+    rect-finder could be missing: (1) every selector's match status and
+    rect, (2) any element with ``data-sitekey`` (the canonical Turnstile
+    marker that's host-agnostic), (3) any element whose id or class
+    contains "turnstile" or "captcha". Pasting this output lets us figure
+    out the real wrapper and add it to ``TURNSTILE_WIDGET``.
+    """
+    selectors_js = list(_TURNSTILE_WIDGET_SELECTORS)
+    js = """(selectors) => {
+      const out = {selector_results: [], sitekey: [], named: [], scripts: []};
+      for (const sel of selectors) {
+        try {
+          const el = document.querySelector(sel);
+          if (el) {
+            const r = el.getBoundingClientRect();
+            out.selector_results.push({sel, found: true, w: r.width, h: r.height, x: r.x, y: r.y});
+          } else {
+            out.selector_results.push({sel, found: false});
+          }
+        } catch (e) {
+          out.selector_results.push({sel, error: String(e)});
+        }
+      }
+      for (const el of document.querySelectorAll('[data-sitekey]')) {
+        const r = el.getBoundingClientRect();
+        out.sitekey.push({tag: el.tagName, id: el.id, cls: el.className, sitekey: el.getAttribute('data-sitekey'), w: r.width, h: r.height});
+      }
+      const named = document.querySelectorAll(
+        '[id*="turnstile" i], [class*="turnstile" i], [id*="captcha" i], [class*="captcha" i]'
+      );
+      for (const el of Array.from(named).slice(0, 15)) {
+        const r = el.getBoundingClientRect();
+        out.named.push({tag: el.tagName, id: el.id, cls: el.className, w: r.width, h: r.height});
+      }
+      for (const el of document.querySelectorAll('script[src*="cloudflare"]')) {
+        out.scripts.push({src: el.src});
+      }
+      return out;
+    }"""
+    try:
+        info = page.evaluate(js, selectors_js)
+    except BrowserError as e:
+        log.warning("Turnstile DOM dump failed: %s", e)
+        return
+    log.warning("Turnstile DOM dump — selector results:")
+    for r in info.get("selector_results", []):
+        log.warning("  %s", r)
+    log.warning("Turnstile DOM dump — [data-sitekey] elements: %s", info.get("sitekey"))
+    log.warning("Turnstile DOM dump — turnstile/captcha-named elements: %s", info.get("named"))
+    log.warning("Turnstile DOM dump — cloudflare script tags: %s", info.get("scripts"))
+
+
+def _click_turnstile_checkbox(
+    page: Page,
+    rect: dict,
+    offset: Optional[tuple[int, int]] = None,
+) -> bool:
+    """Click the checkbox inside a Turnstile widget at known page coords.
 
     The widget content lives in a cross-origin iframe we can't address
-    directly, so we click via page coordinates: the widget's bounding
-    box plus a fixed offset where the checkbox sits in the stock theme.
-    The ``delay=60`` mirrors scrapling's solver and gives the widget's
-    JS handler time to register a real-looking mousedown→mouseup pair.
+    directly, so we click via page coordinates: the widget's rect origin
+    plus a fixed offset where the checkbox sits in the stock theme. The
+    ``delay=60`` mirrors scrapling's solver and gives the widget's JS
+    handler time to register a real-looking mousedown→mouseup pair.
 
-    Returns True if the click was issued, False if the widget has no
-    bounding box (offscreen / display:none after our scroll).
+    ``rect`` is a dict from ``_find_turnstile_widget_rect`` (page-relative
+    coords from JS ``getBoundingClientRect``). We scroll the page to make
+    sure the widget is in the viewport first; otherwise the click lands
+    on whatever's at those screen coordinates.
+
+    ``offset`` overrides the global ``TURNSTILE_CHECKBOX_OFFSET`` for sites
+    where the wrapper is wider than the widget (so the global offset misses
+    to the left). Pass e.g. ``(46, 25)`` for pick-site ``#dynamicCaptchaBox``,
+    where the widget sits ~20px inset from the wrapper origin.
     """
+    cx_offset, cy_offset = offset if offset is not None else _TURNSTILE_CHECKBOX_OFFSET
+    # Scroll the widget into view via JS — same source of truth as the
+    # rect lookup, no Playwright layer to argue with.
     try:
-        widget.scroll_into_view_if_needed(timeout=3000)
+        page.evaluate(
+            "(sel) => { const el = document.querySelector(sel); "
+            "if (el) el.scrollIntoView({block: 'center', behavior: 'instant'}); }",
+            rect.get("selector"),
+        )
     except BrowserError:
         pass
     page.wait_for_timeout(gaussian_random_delay(300))  # Settle after scroll.
 
-    box = widget.bounding_box()
-    if box is None:
-        log.warning("Turnstile widget has no bounding box; cannot click")
-        return False
+    # Re-fetch rect post-scroll — coordinates change after scrollIntoView.
+    fresh = _find_turnstile_widget_rect(page)
+    if fresh is not None:
+        rect = fresh
 
-    cx = box["x"] + _TURNSTILE_CHECKBOX_OFFSET[0]
-    cy = box["y"] + _TURNSTILE_CHECKBOX_OFFSET[1]
+    cx = rect["x"] + cx_offset
+    cy = rect["y"] + cy_offset
     log.info("Clicking Turnstile checkbox at (%d, %d)", cx, cy)
     page.mouse.click(cx, cy, delay=60, button="left")
     return True
@@ -1563,6 +1668,7 @@ def wait_for_turnstile(
     page: Page,
     timeout: int = 30000,
     auto_click_after_ms: Optional[int] = 5000,
+    checkbox_offset: Optional[tuple[int, int]] = None,
 ) -> bool:
     """Wait for (and optionally actively solve) a Cloudflare Turnstile challenge.
 
@@ -1655,13 +1761,14 @@ def wait_for_turnstile(
     if auto_click_after_ms is None:
         log.info("Auto-pass disabled; waiting passively for token...")
     else:
-        widget = _find_turnstile_widget(page)
-        if widget is None:
+        rect = _find_turnstile_widget_rect(page)
+        if rect is None:
             log.warning(
-                "No Turnstile widget visible to click; falling back to passive wait"
+                "No Turnstile widget rect found; falling back to passive wait"
             )
+            _dump_turnstile_dom_info(page)
         else:
-            _click_turnstile_checkbox(page, widget)
+            _click_turnstile_checkbox(page, rect, offset=checkbox_offset)
 
     # Final wait for the token (post-click or passive).
     remaining = max(1000, timeout - grace)
