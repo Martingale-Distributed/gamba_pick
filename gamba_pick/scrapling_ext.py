@@ -157,6 +157,8 @@ def make_casino_automation(
         claim_bonus_action = make_modal_tab_button(
             modal_selector=config.claim_config.modal_selector,
             tab_selector=config.claim_config.tab_selector,
+            tab_click_via_js=config.claim_config.tab_click_via_js,
+            btn_click_via_js=config.claim_config.btn_click_via_js,
             btn_selector=config.claim_config.btn_selector,
             close_btn_selector=config.claim_config.close_btn_selector,
             btn_visibility_timeout_ms=config.claim_config.btn_visibility_timeout_ms,

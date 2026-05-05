@@ -90,7 +90,13 @@ def setup_logger():
     :returns: logging.Logger: Configured logger instance
     """
     logger = logging.getLogger("gamba_pick")
-    logger.setLevel(logging.INFO)
+    # ``LOG_LEVEL`` env var bumps verbosity ad-hoc — useful when a site's
+    # claim flow regresses and you need to see the debug lines (Turnstile
+    # selector matches, is_disabled probe outcomes, popup detection, etc.)
+    # without editing code. Defaults to INFO. Accepts standard Python level
+    # names (DEBUG/INFO/WARNING/ERROR) case-insensitively.
+    level_name = os.environ.get("LOG_LEVEL", "INFO").upper()
+    logger.setLevel(getattr(logging, level_name, logging.INFO))
 
     formatter = logging.Formatter(
         fmt="[%(asctime)s] %(levelname)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
@@ -1006,6 +1012,15 @@ def make_modal_tab_button(
     # whose claim modal opens directly to the daily-bonus view (e.g.
     # YayCasino's coin-store modal that has no tabs).
     tab_selector: Optional[str] = 'button[data-testid="dailyBonus"]',
+    # See MTBClaimConfig.tab_click_via_js. JS-click bypasses overlays
+    # and visibility checks at the cost of skipping Playwright's own
+    # actionability machinery — only flip on when cursor-click lands
+    # on an overlay or otherwise fails to fire the tab's onClick.
+    tab_click_via_js: bool = False,
+    # See MTBClaimConfig.btn_click_via_js. Same JS-click escape hatch
+    # for the main claim button. Also implies skipping the framework's
+    # ``is_disabled()`` probe (JS-click can't honor it cleanly anyway).
+    btn_click_via_js: bool = False,
     # button selector, usually claim button
     btn_selector="button.justify-center:nth-child(4)",
     # close modal selector
@@ -1112,7 +1127,96 @@ def make_modal_tab_button(
                 )
                 return
             if tab_selector:
-                if not safe_click(
+                # DEBUG-gated: enumerate every match for ``tab_selector`` so
+                # a multi-match where ``.first`` picks the wrong element
+                # (e.g. a promo banner / heading button above the visible
+                # tab also containing the tab text) is immediately visible
+                # in the log. Bounding boxes pin where each match sits on
+                # the page; outer HTML pins what each is. Off in non-DEBUG
+                # runs so the locator iteration cost only applies when the
+                # user is actively diagnosing a regression.
+                if log.isEnabledFor(logging.DEBUG):
+                    # Wait briefly for the selector to attach — the modal
+                    # may still be mounting at this point, and dumping
+                    # immediately shows 0 candidates (safe_click's own
+                    # auto-wait catches the tab a beat later when it
+                    # finally exists). 3s mirrors a typical mount window
+                    # without bloating the diagnostic if the selector
+                    # genuinely never matches.
+                    try:
+                        page.wait_for_selector(
+                            tab_selector, timeout=3000, state="attached"
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        matches = page.locator(tab_selector).all()
+                        log.debug(
+                            "[mtb] tab selector %r matched %d candidate(s)",
+                            tab_selector, len(matches),
+                        )
+                        for i, loc in enumerate(matches):
+                            try:
+                                bbox = loc.bounding_box()
+                                text = (loc.text_content() or "").strip()[:80]
+                                html = loc.evaluate(
+                                    "el => el.outerHTML.length > 240 "
+                                    "? el.outerHTML.slice(0, 240) + '...' "
+                                    ": el.outerHTML"
+                                )
+                                log.debug(
+                                    "  [%d] bbox=%s text=%r html=%s",
+                                    i, bbox, text, html,
+                                )
+                                # Hit-test: what element is actually at the
+                                # geometric center of this match? If it's
+                                # not the match itself (or a child), the
+                                # click is being intercepted by an overlay
+                                # — a sticky header, modal backdrop, or
+                                # animation wrapper sitting on top.
+                                if bbox:
+                                    cx = bbox["x"] + bbox["width"] / 2
+                                    cy = bbox["y"] + bbox["height"] / 2
+                                    hit = page.evaluate(
+                                        "({x, y}) => { "
+                                        "const el = document.elementFromPoint(x, y); "
+                                        "if (!el) return null; "
+                                        "return {tag: el.tagName, id: el.id, "
+                                        "cls: el.className, "
+                                        "html: el.outerHTML.length > 240 "
+                                        "? el.outerHTML.slice(0, 240) + '...' "
+                                        ": el.outerHTML}; }",
+                                        {"x": cx, "y": cy},
+                                    )
+                                    log.debug(
+                                        "  [%d] click target (%d, %d) → %s",
+                                        i, cx, cy, hit,
+                                    )
+                            except Exception as e:
+                                log.debug("  [%d] inspect failed: %s", i, e)
+                    except Exception as e:
+                        log.debug("[mtb] tab candidate inspection failed: %s", e)
+                if tab_click_via_js:
+                    # JS-click path: locate via Playwright (so :has-text
+                    # and other Playwright pseudos work), then dispatch a
+                    # synthetic click on the matched element. Bypasses
+                    # cursor hit-testing entirely, so any overlay above
+                    # the tab is irrelevant.
+                    try:
+                        tab_loc = page.locator(tab_selector).first
+                        tab_loc.wait_for(state="attached", timeout=5000)
+                        tab_loc.evaluate("el => el.click()")
+                        log.info(
+                            "[mtb] JS-clicked tab %s (bypassing cursor)",
+                            tab_selector,
+                        )
+                    except Exception as e:
+                        log.error(
+                            "Daily bonus claim failed: JS-click on tab %s: %s",
+                            tab_selector, e,
+                        )
+                        return
+                elif not safe_click(
                     page,
                     tab_selector,
                     timeout=5000,
@@ -1219,71 +1323,97 @@ def make_modal_tab_button(
             # logs ``[click_failed:...] reason=ambiguous_selector``, so
             # taking ``.first`` here doesn't hide the multi-match — the
             # downstream click is still the source of truth.
-            claim_btn = page.locator(btn_selector).first
-            try:
-                already_claimed = claim_btn.is_disabled()
-            except BrowserError as e:
-                # Disabled-state probe couldn't resolve (animation
-                # mid-flight, element removed, etc.) — fall through to
-                # safe_click, which carries its own categorized
-                # diagnostics, rather than masking a real failure.
-                log.debug(
-                    "is_disabled() probe on %s failed: %s; falling through to click",
-                    btn_selector, e,
-                )
-                already_claimed = False
-            if already_claimed:
-                log.info("Daily bonus already claimed.")
-            else:
-                if not safe_click(
-                    page,
-                    btn_selector,
-                    timeout=btn_visibility_timeout_ms,
-                    max_retries=1,
-                ):
-                    log.error(
-                        "Daily bonus claim failed: claim button %s "
-                        "(see [click_failed] / [stuck] log lines above for "
-                        "the categorized reason).",
+            already_claimed = False
+            if btn_click_via_js:
+                # JS-click bypasses cursor hit-testing, actionability,
+                # and Playwright's is_disabled() probe. Use for sites
+                # where the cursor click fails because of overlays or a
+                # transient aria-disabled state during mount animation.
+                try:
+                    btn_loc = page.locator(btn_selector).first
+                    btn_loc.wait_for(
+                        state="attached", timeout=btn_visibility_timeout_ms
+                    )
+                    btn_loc.evaluate("el => el.click()")
+                    log.info(
+                        "[mtb] JS-clicked claim button %s (bypassing cursor)",
                         btn_selector,
+                    )
+                except Exception as e:
+                    log.error(
+                        "Daily bonus claim failed: JS-click on claim button %s: %s",
+                        btn_selector, e,
                     )
                     return
                 wait_for_load_all_safe(page, timeout=3000)
-                # Optional follow-up click. Sites whose claim flow has a
-                # post-CTA confirmation step (e.g. PulszBingo's Wheel of
-                # Winners: ``GET MY COINS`` reveals the prize, then a
-                # separate ``Claim`` button credits it) wire this in via
-                # MTBClaimConfig.post_claim_btn_selector. The canonical
-                # "Daily bonus claimed." log is deferred until this also
-                # succeeds — so a missing follow-up surfaces as an error,
-                # not a false-positive "claimed" run.
-                if post_claim_btn_selector:
-                    if post_claim_settle_ms > 0:
-                        log.info(
-                            "[mtb] settling %dms before post-claim click",
-                            post_claim_settle_ms,
-                        )
-                        page.wait_for_timeout(post_claim_settle_ms)
+            else:
+                claim_btn = page.locator(btn_selector).first
+                try:
+                    already_claimed = claim_btn.is_disabled()
+                except BrowserError as e:
+                    # Disabled-state probe couldn't resolve (animation
+                    # mid-flight, element removed, etc.) — fall through to
+                    # safe_click, which carries its own categorized
+                    # diagnostics, rather than masking a real failure.
+                    log.debug(
+                        "is_disabled() probe on %s failed: %s; falling through to click",
+                        btn_selector, e,
+                    )
+                if already_claimed:
+                    log.info("Daily bonus already claimed.")
+                else:
                     if not safe_click(
                         page,
-                        post_claim_btn_selector,
+                        btn_selector,
                         timeout=btn_visibility_timeout_ms,
                         max_retries=1,
                     ):
                         log.error(
-                            "Daily bonus claim failed: post-claim button %s "
+                            "Daily bonus claim failed: claim button %s "
                             "(see [click_failed] / [stuck] log lines above for "
-                            "the categorized reason). Main claim button was "
-                            "clicked successfully but the follow-up confirmation "
-                            "did not — the bonus may not have been credited.",
-                            post_claim_btn_selector,
+                            "the categorized reason).",
+                            btn_selector,
                         )
                         return
                     wait_for_load_all_safe(page, timeout=3000)
-                # Canonical success line for runner.parse_outcome — every
-                # claim factory should emit some form of "Daily bonus
-                # claimed." so the runner can categorize without per-flow
-                # vocabulary.
+            # Optional follow-up click. Sites whose claim flow has a
+            # post-CTA confirmation step (e.g. PulszBingo's Wheel of
+            # Winners: ``GET MY COINS`` reveals the prize, then a
+            # separate ``Claim`` button credits it) wire this in via
+            # MTBClaimConfig.post_claim_btn_selector. The canonical
+            # "Daily bonus claimed." log is deferred until this also
+            # succeeds — so a missing follow-up surfaces as an error,
+            # not a false-positive "claimed" run. Skipped if the main
+            # button was already-claimed (no main click to follow up on).
+            if not already_claimed and post_claim_btn_selector:
+                if post_claim_settle_ms > 0:
+                    log.info(
+                        "[mtb] settling %dms before post-claim click",
+                        post_claim_settle_ms,
+                    )
+                    page.wait_for_timeout(post_claim_settle_ms)
+                if not safe_click(
+                    page,
+                    post_claim_btn_selector,
+                    timeout=btn_visibility_timeout_ms,
+                    max_retries=1,
+                ):
+                    log.error(
+                        "Daily bonus claim failed: post-claim button %s "
+                        "(see [click_failed] / [stuck] log lines above for "
+                        "the categorized reason). Main claim button was "
+                        "clicked successfully but the follow-up confirmation "
+                        "did not — the bonus may not have been credited.",
+                        post_claim_btn_selector,
+                    )
+                    return
+                wait_for_load_all_safe(page, timeout=3000)
+            # Canonical success line for runner.parse_outcome — every
+            # claim factory should emit some form of "Daily bonus
+            # claimed." so the runner can categorize without per-flow
+            # vocabulary. Skipped on already-claimed since that path
+            # emits its own "Daily bonus already claimed." line above.
+            if not already_claimed:
                 log.info("Daily bonus claimed.")
         except BrowserError as e:
             log.error("Exception occurred while claiming daily bonus: %s", str(e))
@@ -2970,6 +3100,25 @@ class MTBClaimConfig:
     # whose claim modal opens directly to the daily-bonus view (e.g.
     # YayCasino's coin-store modal has no tab switcher).
     tab_selector: Optional[str] = None
+    # When True, the tab click is dispatched via JS (``element.click()``)
+    # instead of a cursor-based Playwright click. Use for sites where the
+    # cursor click lands on an overlay (sticky header, animation wrapper,
+    # backdrop) that intercepts hit-testing while the underlying tab
+    # button is still in the DOM and clickable. JS-click fires a synthetic
+    # MouseEvent on the element and bubbles to its onClick handler — ignores
+    # visibility, hit-testing, and overlays. Only meaningful when
+    # ``tab_selector`` is set.
+    tab_click_via_js: bool = False
+    # Same as ``tab_click_via_js`` but for the main claim ``btn_selector``.
+    # Use when the collect button cursor-click fails actionability —
+    # commonly because of an ``aria-disabled`` attribute set during a
+    # post-tab-switch animation, an overlay above the button, or a brief
+    # zero-size frame during mount. JS-click fires the React onClick and
+    # ignores those quirks. Skips the framework's ``is_disabled()`` probe
+    # too, so don't enable on sites that legitimately disable the button
+    # to signal "already claimed today" without a separate
+    # ``already_claimed_selector``.
+    btn_click_via_js: bool = False
     # Wait budget for ``btn_selector`` to become clickable after the
     # modal-open click. Default covers UI animation slack; bump for
     # flows where the CTA only appears after a multi-second animation
