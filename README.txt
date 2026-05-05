@@ -5,14 +5,14 @@ Quick start
 -----------
 
   1. Drop your purchased .gpcat into ./catalog/
-  2. Copy picks.env.template to picks.env
+  2. Copy .env.template to .env
   3. Run: ./run.sh        (POSIX/macOS)
           run.cmd         (Windows: double-click or run from cmd)
 
   First-run setup downloads ~600 MB (Python + browsers). Subsequent
   runs are subsecond to start.
 
-  When prompted, paste your license key. It saves to picks.env so
+  When prompted, paste your license key. It saves to .env so
   you don't enter it again.
 
   Then follow the on-screen "Setup is not complete" instructions to
@@ -58,7 +58,7 @@ Updates
 -------
 
   When a new gamba-pick zip ships, unzip it next to the existing
-  install (or overwrite). DO NOT delete: picks.env, profiles/,
+  install (or overwrite). DO NOT delete: .env, profiles/,
   claims.csv, claim_history.jsonl, catalog/. Those are your data.
 
 Manual fallback (if uv installer is rejected)

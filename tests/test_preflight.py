@@ -153,7 +153,7 @@ def test_format_remediation_lists_each_action(tmp_path: Path):
         RemediationItem(
             site_id="sportzino",
             reason="missing credentials",
-            action="Edit picks.env and add: SPORTZINO_USERNAME=...; SPORTZINO_PASSWORD=...",
+            action="Edit .env and add: SPORTZINO_USERNAME=...; SPORTZINO_PASSWORD=...",
         ),
         RemediationItem(
             site_id="pulsz",

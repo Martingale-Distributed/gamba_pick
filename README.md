@@ -27,7 +27,7 @@ playwright install            # if you don't already have a browser
 .venv/bin/camoufox fetch      # for the Camoufox / Firefox backend
 ```
 
-Site modules read their credentials from a local `picks.env`:
+Site modules read their credentials from a local `.env`:
 
 ```
 SPINQUEST_USERNAME=...
@@ -39,7 +39,7 @@ STAKEUS_PASSWORD=...
 ## Run a single site
 
 ```bash
-python spinquest.py             # form auth, reads picks.env
+python spinquest.py             # form auth, reads .env
 python stake_us.py --skip-claim # login + balance read only
 python stake_us.py --headless   # CI-friendly
 ```

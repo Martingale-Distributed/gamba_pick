@@ -107,7 +107,7 @@ def check_site_credentials(
             site_id=site_id,
             reason="missing credentials",
             action=(
-                f"Edit picks.env and add: {username_key}=...; {password_key}=..."
+                f"Edit .env and add: {username_key}=...; {password_key}=..."
             ),
         )
     if auth == "oauth":

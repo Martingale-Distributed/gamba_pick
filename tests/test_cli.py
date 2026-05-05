@@ -99,7 +99,7 @@ def test_preflight_blocks_when_creds_missing(tmp_path: Path, capsys, monkeypatch
         "--profiles-dir", str(profiles),
         "--claims-csv", str(tmp_path / "claims.csv"),
         "--log-file", str(tmp_path / "claim_history.jsonl"),
-        "--picks-env", str(tmp_path / "picks.env"),
+        "--env-file", str(tmp_path / ".env"),
     ])
 
     assert rc == 0

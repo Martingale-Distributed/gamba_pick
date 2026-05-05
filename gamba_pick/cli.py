@@ -60,7 +60,10 @@ DEFAULT_CATALOG_DIR = DEFAULT_ROOT / "catalog"
 DEFAULT_PROFILES_DIR = DEFAULT_ROOT / "profiles"
 DEFAULT_CLAIMS_CSV = DEFAULT_ROOT / "claims.csv"
 DEFAULT_LOG_FILE = DEFAULT_ROOT / "claim_history.jsonl"
-DEFAULT_PICKS_ENV = DEFAULT_ROOT / "picks.env"
+DEFAULT_ENV_FILE = DEFAULT_ROOT / ".env"
+# Legacy name. Honored as a one-release fallback when ``.env`` is absent
+# but ``picks.env`` exists — the framework warns once and continues.
+LEGACY_ENV_FILE = DEFAULT_ROOT / "picks.env"
 MAX_LICENSE_ATTEMPTS = 3
 
 
@@ -140,7 +143,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--profiles-dir", type=Path, default=DEFAULT_PROFILES_DIR)
     p.add_argument("--claims-csv", type=Path, default=DEFAULT_CLAIMS_CSV)
     p.add_argument("--log-file", type=Path, default=DEFAULT_LOG_FILE)
-    p.add_argument("--picks-env", type=Path, default=DEFAULT_PICKS_ENV)
+    # ``--env-file`` is the canonical flag; ``--picks-env`` is a deprecated
+    # alias kept for one release so anyone with cron lines / scripts
+    # baking the old name doesn't break.
+    p.add_argument(
+        "--env-file", "--picks-env",
+        type=Path, default=DEFAULT_ENV_FILE,
+        dest="env_file",
+    )
     p.add_argument(
         "--timeout-per-site", type=int, default=300,
         help="Default per-site subprocess timeout (seconds).",
@@ -157,14 +167,14 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def load_env_for_preflight(picks_env: Path) -> dict:
-    """Return a flat ``KEY=VALUE`` dict from picks.env merged with os.environ.
+def load_env_for_preflight(env_file: Path) -> dict:
+    """Return a flat ``KEY=VALUE`` dict from ``.env`` merged with os.environ.
 
     os.environ wins on conflict (so a shell-exported override takes effect).
     """
     env: dict = {}
-    if picks_env.exists():
-        for line in picks_env.read_text().splitlines():
+    if env_file.exists():
+        for line in env_file.read_text().splitlines():
             line = line.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue
@@ -177,7 +187,7 @@ def load_env_for_preflight(picks_env: Path) -> dict:
     return env
 
 
-def _prompt_license(picks_env: Path) -> Optional[str]:
+def _prompt_license(env_file: Path) -> Optional[str]:
     """Three-strikes license-key prompt. Returns the entered string or None
     if the user gave up (we let the caller treat that as fatal)."""
     print("Catalog detected. Please enter your license key.")
@@ -188,26 +198,26 @@ def _prompt_license(picks_env: Path) -> Optional[str]:
         return None
     if not s:
         return None
-    write_license(picks_env, s)
+    write_license(env_file, s)
     return s
 
 
 def _decrypt_with_retry(
     gpcat_path: Path,
     *,
-    picks_env: Path,
+    env_file: Path,
 ) -> Path:
     """Look up the license, decrypt; on failure, prompt up to MAX_LICENSE_ATTEMPTS times.
 
     Returns the temp-dir Path. Registers an atexit cleanup. Raises
     SystemExit(1) if the customer can't produce a valid license.
     """
-    license_str = read_license(picks_env)
+    license_str = read_license(env_file)
     attempts_remaining = MAX_LICENSE_ATTEMPTS
 
     while True:
         if license_str is None:
-            license_str = _prompt_license(picks_env)
+            license_str = _prompt_license(env_file)
             if license_str is None:
                 print("No license key provided. See the support email line in README.", file=sys.stderr)
                 raise SystemExit(1)
@@ -251,6 +261,24 @@ def main(argv: list[str] | None = None) -> int:
         print(render_summary(args.claims_csv, days=args.summary))
         return 0
 
+    # Resolve env file with one-release legacy fallback: if the user
+    # didn't override --env-file and ``.env`` doesn't exist but the
+    # legacy ``picks.env`` does, point at the legacy file with a
+    # one-shot warning. This keeps existing installs working through
+    # the rename without surprise breakage.
+    if (
+        args.env_file == DEFAULT_ENV_FILE
+        and not args.env_file.exists()
+        and LEGACY_ENV_FILE.exists()
+    ):
+        print(
+            "warning: using legacy picks.env — rename it to .env "
+            "(the picks.env name is deprecated and will stop being "
+            "auto-detected in a future release).",
+            file=sys.stderr,
+        )
+        args.env_file = LEGACY_ENV_FILE
+
     # Catalog discovery + decrypt (if any).
     catalog_action: PreflightAction = check_catalog(args.catalog_dir)
     bundle_root: Optional[Path] = None
@@ -264,7 +292,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             bundle_root = _decrypt_with_retry(
                 catalog_action.gpcat_path,
-                picks_env=args.picks_env,
+                env_file=args.env_file,
             )
         except SystemExit as e:
             return int(e.code) if e.code is not None else 1
@@ -343,7 +371,7 @@ def main(argv: list[str] | None = None) -> int:
         return _do_setup(args, working, extra_config_dir)
 
     # Detect-and-instruct preflight.
-    env = load_env_for_preflight(args.picks_env)
+    env = load_env_for_preflight(args.env_file)
     items = run_preflight(
         sites=working,
         env=env,

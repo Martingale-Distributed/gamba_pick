@@ -1,9 +1,12 @@
-"""Read/write of ``GAMBA_PICK_LICENSE`` in ``picks.env``.
+"""Read/write of ``GAMBA_PICK_LICENSE`` in ``.env``.
 
-Treats picks.env as a flat KEY=VALUE file. We don't parse it as a real
-shell file — we just look for / write the one variable we care about,
-preserving the rest of the file. That's enough for our use case
+Treats the env file as a flat KEY=VALUE file. We don't parse it as a
+real shell file — we just look for / write the one variable we care
+about, preserving the rest of the file. That's enough for our use case
 (occasional one-time write from the license prompt).
+
+Filename agnostic: callers pass the path explicitly. The CLI default is
+``.env``; ``picks.env`` is honored as a one-release legacy fallback.
 """
 
 from __future__ import annotations
@@ -15,7 +18,7 @@ LICENSE_ENV_VAR = "GAMBA_PICK_LICENSE"
 
 
 def read_license(env_path: Path) -> Optional[str]:
-    """Return the license string from picks.env, or None if absent.
+    """Return the license string from the env file, or None if absent.
 
     Strips surrounding quotes ("..." or '...') if present.
     """
@@ -38,7 +41,7 @@ def read_license(env_path: Path) -> Optional[str]:
 
 
 def write_license(env_path: Path, license_str: str) -> None:
-    """Persist ``license_str`` as ``GAMBA_PICK_LICENSE`` in picks.env.
+    """Persist ``license_str`` as ``GAMBA_PICK_LICENSE`` in the env file.
 
     - If the file doesn't exist: create it.
     - If the variable already exists: replace that line in place.

@@ -21,7 +21,7 @@ This config targets the "legitimate user on their own laptop" use case:
 - No proxy recommended — the point is that the user IS in an allowed
   state and we want GeoComply to see that as the truth it is.
 
-Credentials come from picks.env via SPINQUEST_USERNAME /
+Credentials come from .env via SPINQUEST_USERNAME /
 SPINQUEST_PASSWORD (prefix derived from the domain by url_to_env_prefix).
 
 Usage

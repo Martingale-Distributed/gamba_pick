@@ -34,7 +34,7 @@ Daily-bonus chain (verified live in the lobby):
 - close_btn_selector → ``button[aria-label="Close modal"]`` (the X on
   the modal header).
 
-Credentials come from picks.env via SHUFFLE_US_USERNAME / SHUFFLE_US_PASSWORD
+Credentials come from .env via SHUFFLE_US_USERNAME / SHUFFLE_US_PASSWORD
 (prefix derived from the ``shuffle.us`` domain by url_to_env_prefix).
 
 Usage
@@ -146,7 +146,7 @@ def create_shuffle_us_config() -> CasinoConfig:
         claim_pattern="mtb",
 
         # 2FA enabled on this account — TOTP secret read from
-        # ``SHUFFLE_US_2FA`` in picks.env, filled into the OTP input
+        # ``SHUFFLE_US_2FA`` in .env, filled into the OTP input
         # via the selectors above when the post-login challenge fires.
         # The challenge appears intermittently (only when the trust
         # cookie isn't current), so the framework's TOTP block is a
