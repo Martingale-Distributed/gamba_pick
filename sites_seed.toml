@@ -116,13 +116,6 @@ affiliate_link = "https://www.yaycasino.com/signup/74ffb2ba-4661-49e6-928a-eabf5
 status = "commercial"
 
 [[site]]
-id = "yay_casino_us"
-name = "YayCasino US"
-url = "https://yaycasino.us"
-affiliate_link = "https://www.yaycasino.us/signup/9843212a-3b49-48fa-938b-483bb3ceb30f"
-status = "surveyed"
-
-[[site]]
 id = "chumba_casino"
 name = "Chumba Casino"
 url = "https://lobby.chumbacasino.com"
