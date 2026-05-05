@@ -117,3 +117,8 @@ cloudflare_debug.html
 claim_history.jsonl
 .bootstrap-done
 claims.csv
+
+# Customer-facing catalog directory — holds encrypted .gpcat bundles for
+# local testing. Encrypted at rest but still customer-paid content; never
+# commit to a public repo.
+catalog/

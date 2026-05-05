@@ -253,6 +253,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Catalog discovery + decrypt (if any).
     catalog_action: PreflightAction = check_catalog(args.catalog_dir)
+    bundle_root: Optional[Path] = None
     extra_config_dir: Optional[Path] = None
 
     if catalog_action.kind == "error":
@@ -261,12 +262,23 @@ def main(argv: list[str] | None = None) -> int:
     if catalog_action.kind == "decrypt":
         assert catalog_action.gpcat_path is not None
         try:
-            extra_config_dir = _decrypt_with_retry(
+            bundle_root = _decrypt_with_retry(
                 catalog_action.gpcat_path,
                 picks_env=args.picks_env,
             )
         except SystemExit as e:
             return int(e.code) if e.code is not None else 1
+        # Bundle layout convention: ``<root>/manifest.toml``,
+        # ``<root>/sites_seed.toml``, and ``<root>/configs/<module>.py``.
+        # The runner takes a config_dir and looks for ``<dir>/<module>.py``
+        # directly, so when the bundle has a ``configs/`` subdir we hand
+        # the runner that subdir, not the bundle root. Bundles built
+        # without the subdir (legacy / flat layout) fall back to the
+        # root, which keeps the runner happy in either case.
+        configs_subdir = bundle_root / "configs"
+        extra_config_dir = (
+            configs_subdir if configs_subdir.is_dir() else bundle_root
+        )
     elif catalog_action.message:
         # The "no catalog found, reference configs only" hint is misleading
         # when the dev passed --config-dir; suppress it in that case.
@@ -285,8 +297,8 @@ def main(argv: list[str] | None = None) -> int:
         sites = _load_seed(FRAMEWORK_SEED)
     if args.seed_file != FRAMEWORK_SEED:
         sites = _merge_seeds(sites, _load_seed(args.seed_file))
-    if extra_config_dir is not None:
-        bundle_seed = extra_config_dir / "sites_seed.toml"
+    if bundle_root is not None:
+        bundle_seed = bundle_root / "sites_seed.toml"
         if bundle_seed.exists():
             sites = _merge_seeds(sites, _load_seed(bundle_seed))
 

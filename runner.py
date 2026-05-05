@@ -287,9 +287,22 @@ def run_site(site: Site, opts: argparse.Namespace) -> RunResult:
     # but a stripped assert would surface as a less clear failure
     # downstream (subprocess exec on a None path).
     if module_path is None:
+        cd = opts.config_dir
+        cd_exists = cd.exists() if cd is not None else None
+        cd_listing = (
+            sorted(p.name for p in cd.iterdir())[:20]
+            if cd is not None and cd_exists else None
+        )
+        ext_path = (cd / f"{site.module}.py") if cd is not None else None
+        ext_exists = ext_path.exists() if ext_path is not None else None
+        ref_path = REFERENCE_CONFIGS_DIR / f"{site.module}.py"
         raise FileNotFoundError(
             f"site {site.id} module {site.module}.py vanished between "
-            f"preflight and run"
+            f"preflight and run\n"
+            f"  config_dir={cd!r} exists={cd_exists}\n"
+            f"  listing={cd_listing}\n"
+            f"  external_candidate={ext_path!r} exists={ext_exists}\n"
+            f"  reference_candidate={ref_path!r} exists={ref_path.exists()}"
         )
     cmd = [sys.executable, str(module_path)]
     # ``--google-oauth`` resolves from either the seed's per-site
