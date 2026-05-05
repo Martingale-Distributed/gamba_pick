@@ -9,6 +9,7 @@ __pycache__/
 .ve
 .env
 .pytest
+.claude/settings.json
 .benchmarks
 .bootstrap
 .appveyor.token
