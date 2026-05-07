@@ -3,9 +3,17 @@ REM gamba-pick bootstrap (Windows). Installs uv if missing, syncs the
 REM locked Python environment, fetches browsers on first run, and
 REM exec's the gamba-pick CLI.
 REM
-REM NOTE: The uv installer SHA below was not verified at build time (the
-REM dev machine for this plan was Linux). Customers who hit a hash mismatch
-REM should follow README.txt's "Manual fallback" section.
+REM SECURITY: ``UV_INSTALL_SHA256`` below MUST be replaced with the
+REM actual SHA256 of ``https://astral.sh/uv/install.ps1`` before this
+REM script is shipped. The release process (operator machine with
+REM Windows access) computes the hash via:
+REM
+REM    powershell -NoProfile -Command "(Get-FileHash -Algorithm SHA256 -Path 'install.ps1').Hash.ToLower()"
+REM
+REM and pastes the lowercase hex into ``UV_INSTALL_SHA256``. Until then
+REM this script fails closed — running with the placeholder value would
+REM execute downloaded code without integrity verification, which is a
+REM remote-code-execution path and unacceptable for a customer release.
 
 setlocal EnableDelayedExpansion
 
@@ -25,18 +33,22 @@ if errorlevel 1 (
             echo ERROR: failed to download uv installer.
             exit /b 1
         )
-        REM SHA256 verification.
+        REM SHA256 verification — fail closed on the placeholder so we
+        REM never execute downloaded code without integrity checking.
+        if /i "!UV_INSTALL_SHA256!"=="REPLACE_BEFORE_RELEASE" (
+            echo ERROR: UV_INSTALL_SHA256 was not pinned before release.
+            echo Refusing to execute the downloaded uv installer without integrity verification.
+            echo The release operator must compute the SHA256 of install.ps1 and edit run.cmd.
+            del "%TMP_INSTALLER%" 2>nul
+            exit /b 1
+        )
         for /f "delims=" %%H in ('powershell -NoProfile -Command "(Get-FileHash -Algorithm SHA256 -Path '%TMP_INSTALLER%').Hash.ToLower()"') do set "ACTUAL_SHA=%%H"
-        if /i not "!UV_INSTALL_SHA256!"=="REPLACE_BEFORE_RELEASE" (
-            if /i not "!ACTUAL_SHA!"=="!UV_INSTALL_SHA256!" (
-                echo ERROR: uv installer hash mismatch.
-                echo   expected: !UV_INSTALL_SHA256!
-                echo   actual:   !ACTUAL_SHA!
-                exit /b 1
-            )
-        ) else (
-            echo WARNING: uv installer SHA not pinned for Windows; skipping verification.
-            echo See README.txt's manual fallback if this concerns you.
+        if /i not "!ACTUAL_SHA!"=="!UV_INSTALL_SHA256!" (
+            echo ERROR: uv installer hash mismatch.
+            echo   expected: !UV_INSTALL_SHA256!
+            echo   actual:   !ACTUAL_SHA!
+            del "%TMP_INSTALLER%" 2>nul
+            exit /b 1
         )
         powershell -NoProfile -ExecutionPolicy Bypass -File "%TMP_INSTALLER%"
         del "%TMP_INSTALLER%"
