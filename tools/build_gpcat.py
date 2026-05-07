@@ -72,9 +72,17 @@ def pack_catalog_to_zstd_tar(catalog_dir: Path) -> bytes:
         # Walk the directory and add each entry with a clean relative arcname
         # (no leading "./" prefix) so tar paths look like "manifest.toml",
         # "configs/site_a.py", etc.
+        #
+        # ``recursive=False`` is critical: ``tarfile.add()`` defaults to
+        # ``recursive=True``, so when we hand it a directory entry it
+        # walks the directory itself AND adds every child — and then our
+        # outer ``rglob('*')`` loop adds those same children again,
+        # producing duplicate tar members and a much larger bundle.
+        # Adding each entry non-recursively means each path appears
+        # exactly once.
         for entry in sorted(catalog_dir.rglob("*")):
             arcname = entry.relative_to(catalog_dir).as_posix()
-            tf.add(entry, arcname=arcname)
+            tf.add(entry, arcname=arcname, recursive=False)
     raw = buf.getvalue()
     cctx = zstandard.ZstdCompressor(level=10)
     return cctx.compress(raw)
