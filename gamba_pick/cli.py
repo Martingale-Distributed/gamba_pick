@@ -197,7 +197,13 @@ def _decrypt_with_retry(
         if license_str is None:
             license_str = _prompt_license(env_file)
             if license_str is None:
-                print("No license key provided. See the support email line in README.", file=sys.stderr)
+                print(
+                    "No license key provided. Your license was sent with "
+                    "the .gpcat file when you purchased the catalog — check "
+                    "the email or message channel you received the bundle "
+                    "from, then re-run ./run.sh and paste it at the prompt.",
+                    file=sys.stderr,
+                )
                 raise SystemExit(1)
         try:
             tmp = decrypt_catalog_to_tempdir(gpcat_path, license_str=license_str)
