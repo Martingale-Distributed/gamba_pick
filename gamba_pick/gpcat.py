@@ -26,7 +26,6 @@ from __future__ import annotations
 import struct
 from dataclasses import dataclass
 
-from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -112,7 +111,6 @@ def derive_key(license_str: str, bundle_id: bytes) -> bytes:
         length=32,
         salt=bundle_id,
         info=HKDF_INFO,
-        backend=default_backend(),
     )
     return hkdf.derive(canonical.encode("utf-8"))
 
