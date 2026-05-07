@@ -155,7 +155,7 @@ def test_read_last_balance_for_site_with_no_matching_rows(tmp_path: Path):
 def test_runner_helper_picks_primary_and_routes_secondary(tmp_path: Path):
     """The runner's _append_csv_row picks site.primary_currency for the
     primary balance and routes the rest into secondary_balances."""
-    from runner import Site, RunResult, _append_csv_row
+    from gamba_pick.runner import Site, RunResult, _append_csv_row
 
     site = Site(
         id="sportzino",
@@ -194,7 +194,7 @@ def test_runner_helper_picks_primary_and_routes_secondary(tmp_path: Path):
 def test_runner_helper_with_missing_primary_routes_all_to_secondary(tmp_path: Path):
     """If the primary currency isn't in the balances, balance/currency are blank
     and ALL balances go into secondary_balances."""
-    from runner import Site, RunResult, _append_csv_row
+    from gamba_pick.runner import Site, RunResult, _append_csv_row
 
     site = Site(
         id="fortune_wins",

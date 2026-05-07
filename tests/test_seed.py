@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from runner import Site, load_sites
+from gamba_pick.runner import Site, load_sites
 
 
 def test_site_has_primary_currency_field():

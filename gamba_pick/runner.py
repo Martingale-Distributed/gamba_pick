@@ -10,20 +10,16 @@ Subprocess isolation matters: a hang in one site's browser teardown
 won't take the rest of the run with it — the runner times the child
 out and moves on.
 
-Intended cron usage:
+Intended cron usage (via the ``gamba-pick`` console script — direct
+invocation via ``python -m gamba_pick.runner`` is not supported):
 
     # Daily claim sweep at 9am local
-    0 9 * * * cd /home/lothrop/src/gamba_pick && uv run python runner.py --headless
+    0 9 * * * cd /path/to/gamba-pick-install && ./run.sh
 
-CLI:
-
-    python runner.py                          # run all working sites, non-headless
-    python runner.py --headless               # same, headless
-    python runner.py --only sportzino zula_casino
-    python runner.py --skip stake_us
-    python runner.py --skip-claim             # login + balance read, no claim
-    python runner.py --dry-run                # print the plan, don't execute
-    python runner.py --timeout-per-site 600   # default 300s
+The legacy ``python runner.py`` invocation no longer works because this
+module lives inside the package now. The console script (``gamba-pick``,
+defined in ``[project.scripts]``) is the customer-facing entrypoint;
+``run.sh`` / ``run.cmd`` chdir to the install root and invoke it via uv.
 
 Per-site timeout overrides live in ``sites_seed.toml`` as the optional
 ``timeout_s`` field; site-level values take precedence over
@@ -45,7 +41,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
-ROOT = Path(__file__).parent
+# ``ROOT`` is the user's install root — where ``run.sh``, ``.env``,
+# ``catalog/``, ``profiles/`` etc. live. After the move into the
+# package (so the wheel actually contains this module), ``Path(__file__)``
+# would resolve into site-packages on a normal customer install, which
+# is the wrong place to look for user data. ``Path.cwd()`` matches
+# ``gamba_pick.cli.DEFAULT_ROOT`` and is correct because ``run.sh`` /
+# ``run.cmd`` chdir to the install root before invoking the entrypoint.
+ROOT = Path.cwd()
 SEED_FILE = ROOT / "sites_seed.toml"
 LOG_FILE = ROOT / "claim_history.jsonl"
 CLAIMS_CSV = ROOT / "claims.csv"

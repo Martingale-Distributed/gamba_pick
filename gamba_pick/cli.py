@@ -67,28 +67,6 @@ LEGACY_ENV_FILE = DEFAULT_ROOT / "picks.env"
 MAX_LICENSE_ATTEMPTS = 3
 
 
-def _load_runner():
-    """Load runner.py from the repo root and register it as sys.modules['runner'].
-
-    The console-script entry point doesn't put the repo root on sys.path, so
-    `import runner` fails by default. This helper makes runner importable
-    by absolute path. Idempotent — safe to call multiple times.
-    """
-    import importlib.util
-    import sys
-    if "runner" in sys.modules:
-        return sys.modules["runner"]
-    repo_root = Path(__file__).resolve().parent.parent
-    runner_path = repo_root / "runner.py"
-    spec = importlib.util.spec_from_file_location("runner", runner_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Could not load runner module from {runner_path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["runner"] = module
-    spec.loader.exec_module(module)
-    return module
-
-
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="gamba-pick",
@@ -390,7 +368,7 @@ def _do_setup(args, working: list[dict], extra_config_dir: Optional[Path]) -> in
 
     Delegates to runner.run_site with --setup forwarded.
     """
-    runner_mod = _load_runner()
+    from gamba_pick import runner
     target = args.setup
     sites_to_setup = (
         [s for s in working if s["id"] == target]
@@ -421,9 +399,9 @@ def _do_setup(args, working: list[dict], extra_config_dir: Optional[Path]) -> in
     )
 
     for site_dict in sites_to_setup:
-        site = runner_mod.Site(**site_dict)
+        site = runner.Site(**site_dict)
         print(f"=== {site.id} (setup) ===", flush=True)
-        runner_mod.run_site(site, runner_opts)
+        runner.run_site(site, runner_opts)
     return 0
 
 
@@ -431,7 +409,7 @@ def _do_sweep(args, working: list[dict], extra_config_dir: Optional[Path]) -> in
     """Run the daily sweep. Mirrors runner.main()'s loop, but with the
     new defaults (headless on by default; CSV append on by default)."""
     import argparse as _ap
-    runner_mod = _load_runner()
+    from gamba_pick import runner
 
     runner_opts = _ap.Namespace(
         headless=not args.show_browser,
@@ -459,13 +437,13 @@ def _do_sweep(args, working: list[dict], extra_config_dir: Optional[Path]) -> in
 
     results = []
     for i, site_dict in enumerate(working, start=1):
-        site = runner_mod.Site(**site_dict)
+        site = runner.Site(**site_dict)
         print(f"[{i}/{len(working)}] {site.id} ...", flush=True)
-        result = runner_mod.run_site(site, runner_opts)
+        result = runner.run_site(site, runner_opts)
         if not runner_opts.stream:
-            runner_mod.append_history(result, runner_opts.log_file)
+            runner.append_history(result, runner_opts.log_file)
             if not runner_opts.no_csv:
-                runner_mod._append_csv_row(site, result, runner_opts.claims_csv)
+                runner._append_csv_row(site, result, runner_opts.claims_csv)
         flag = "ok" if result.ok else ("timeout" if result.timed_out else "fail")
         bal = ""
         if result.balances:
