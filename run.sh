@@ -21,7 +21,20 @@ if ! command -v uv >/dev/null 2>&1; then
         TMP_INSTALLER="$(mktemp)"
         trap 'rm -f "$TMP_INSTALLER"' EXIT
         curl -fsSL "$UV_INSTALL_URL" -o "$TMP_INSTALLER"
-        ACTUAL_SHA="$(sha256sum "$TMP_INSTALLER" | awk '{print $1}')"
+        # Portable SHA256: ``sha256sum`` is GNU coreutils (Linux),
+        # ``shasum -a 256`` ships with macOS by default, ``openssl
+        # dgst -sha256`` is everywhere else as a last resort.
+        if command -v sha256sum >/dev/null 2>&1; then
+            ACTUAL_SHA="$(sha256sum "$TMP_INSTALLER" | awk '{print $1}')"
+        elif command -v shasum >/dev/null 2>&1; then
+            ACTUAL_SHA="$(shasum -a 256 "$TMP_INSTALLER" | awk '{print $1}')"
+        elif command -v openssl >/dev/null 2>&1; then
+            ACTUAL_SHA="$(openssl dgst -sha256 "$TMP_INSTALLER" | awk '{print $NF}')"
+        else
+            echo "ERROR: no SHA256 utility found (need one of sha256sum, shasum, openssl)." >&2
+            echo "Install one of those and re-run, or follow README.txt's manual install." >&2
+            exit 1
+        fi
         if [[ "$ACTUAL_SHA" != "$UV_INSTALL_SHA256" ]]; then
             echo "ERROR: uv installer hash mismatch." >&2
             echo "  expected: $UV_INSTALL_SHA256" >&2
