@@ -15,7 +15,6 @@ from __future__ import annotations
 import enum
 import io
 import shutil
-import sys
 import tarfile
 import tempfile
 from pathlib import Path
@@ -69,15 +68,11 @@ def decrypt_catalog_to_tempdir(
     out_dir = Path(tempfile.mkdtemp(prefix="gamba-pick-cat-"))
     try:
         with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as tf:
-            # filter='data' (Python 3.12+) refuses absolute paths and
-            # other tar shenanigans. On Python 3.11 the kwarg doesn't
-            # exist; we omit it there since we control the builder and
-            # only write relative paths. The requirement will be tightened
-            # to >=3.12 in Phase 8.
-            if sys.version_info >= (3, 12):
-                tf.extractall(path=out_dir, filter="data")
-            else:
-                tf.extractall(path=out_dir)  # noqa: S202
+            # ``filter='data'`` (Python 3.12+) refuses absolute paths,
+            # parent-relative paths, and other tar shenanigans. The
+            # project pins ``requires-python = ">=3.12"`` and
+            # ``.python-version = 3.12``, so this is always available.
+            tf.extractall(path=out_dir, filter="data")
     except Exception:
         shutil.rmtree(out_dir, ignore_errors=True)
         raise
