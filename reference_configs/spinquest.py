@@ -21,7 +21,7 @@ This config targets the "legitimate user on their own laptop" use case:
 - No proxy recommended — the point is that the user IS in an allowed
   state and we want GeoComply to see that as the truth it is.
 
-Credentials come from picks.env via SPINQUEST_USERNAME /
+Credentials come from .env via SPINQUEST_USERNAME /
 SPINQUEST_PASSWORD (prefix derived from the domain by url_to_env_prefix).
 
 Usage
@@ -33,7 +33,7 @@ from typing import Dict
 
 from playwright.sync_api import Page
 
-from casino import (
+from gamba_pick.casino import (
     BrowserError,
     CasinoAccountState,
     CasinoConfig,
@@ -46,7 +46,7 @@ from casino import (
     log,
     make_grant_geolocation_permission,
 )
-from scrapling_ext import make_casino_automation
+from gamba_pick.scrapling_ext import make_casino_automation
 
 
 def open_login_modal(page: Page) -> None:
@@ -266,8 +266,7 @@ def create_spinquest_config() -> CasinoConfig:
         # Profile invalidated by the swap (Firefox profile layout ≠
         # Chrome): re-run ``--setup`` to bootstrap a fresh
         # authenticated profile.
-        real_chrome=True,
-        browser_backend="chrome",
+        # browser_backend="camoufox",
         # SpinQuest's lobby + balance hydration is the slowest of the
         # working set (login submit → cookies → navigate → React init →
         # balance fetch chain regularly takes 30-50s). Bumping

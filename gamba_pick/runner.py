@@ -10,20 +10,16 @@ Subprocess isolation matters: a hang in one site's browser teardown
 won't take the rest of the run with it — the runner times the child
 out and moves on.
 
-Intended cron usage:
+Intended cron usage (via the ``gamba-pick`` console script — direct
+invocation via ``python -m gamba_pick.runner`` is not supported):
 
     # Daily claim sweep at 9am local
-    0 9 * * * cd /home/lothrop/src/gamba_pick && uv run python runner.py --headless
+    0 9 * * * cd /path/to/gamba-pick-install && ./run.sh
 
-CLI:
-
-    python runner.py                          # run all working sites, non-headless
-    python runner.py --headless               # same, headless
-    python runner.py --only sportzino zula_casino
-    python runner.py --skip stake_us
-    python runner.py --skip-claim             # login + balance read, no claim
-    python runner.py --dry-run                # print the plan, don't execute
-    python runner.py --timeout-per-site 600   # default 300s
+The legacy ``python runner.py`` invocation no longer works because this
+module lives inside the package now. The console script (``gamba-pick``,
+defined in ``[project.scripts]``) is the customer-facing entrypoint;
+``run.sh`` / ``run.cmd`` chdir to the install root and invoke it via uv.
 
 Per-site timeout overrides live in ``sites_seed.toml`` as the optional
 ``timeout_s`` field; site-level values take precedence over
@@ -45,9 +41,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
-ROOT = Path(__file__).parent
+# ``ROOT`` is the user's install root — where ``run.sh``, ``.env``,
+# ``catalog/``, ``profiles/`` etc. live. After the move into the
+# package (so the wheel actually contains this module), ``Path(__file__)``
+# would resolve into site-packages on a normal customer install, which
+# is the wrong place to look for user data. ``Path.cwd()`` matches
+# ``gamba_pick.cli.DEFAULT_ROOT`` and is correct because ``run.sh`` /
+# ``run.cmd`` chdir to the install root before invoking the entrypoint.
+ROOT = Path.cwd()
 SEED_FILE = ROOT / "sites_seed.toml"
 LOG_FILE = ROOT / "claim_history.jsonl"
+CLAIMS_CSV = ROOT / "claims.csv"
 
 DEFAULT_TIMEOUT_S = 300  # 5 min per site
 
@@ -132,6 +136,13 @@ class Site:
     # fires shortly after the DONE marker rather than waiting out
     # the global default.
     timeout_s: Optional[int] = None
+    # Currency code that goes into the ``balance`` / ``currency`` columns
+    # of claims.csv. Other parsed currencies land in
+    # ``secondary_balances``. Defaults to "SC" — the redeemable currency
+    # in the sweepstakes-casino model that covers most of our sites.
+    # Override per-site for non-SC sites (e.g. "FC" for FortuneWins,
+    # "USDT" for Stake.us).
+    primary_currency: str = "SC"
 
 
 @dataclass
@@ -164,23 +175,22 @@ def load_sites(path: Path = SEED_FILE) -> List[Site]:
     return [Site(**s) for s in data["site"]]
 
 
-def _resolve_module_path(module: str, config_dir: Optional[Path]) -> Optional[Path]:
-    """Find ``<module>.py`` in the external config dir, then in ROOT.
+REFERENCE_CONFIGS_DIR = ROOT / "reference_configs"
 
-    Returns the first existing path or ``None`` if neither location has
-    it. ROOT is the gamba_pick install — the framework's public
-    reference configs (spinquest, stake_us) live there and stay
-    reachable when the runner is pointed at an external bundle, so a
-    single comprehensive seed can mix both without forcing duplicates
-    into the bundle.
+
+def _resolve_module_path(module: str, config_dir: Optional[Path]) -> Optional[Path]:
+    """Find ``<module>.py`` in (a) the external --config-dir, (b) the
+    bundled reference_configs/, then give up.
+
+    Returns the first existing path or ``None``.
     """
     if config_dir is not None:
         external = (config_dir / f"{module}.py").resolve()
         if external.exists():
             return external
-    in_tree = ROOT / f"{module}.py"
-    if in_tree.exists():
-        return in_tree
+    bundled = REFERENCE_CONFIGS_DIR / f"{module}.py"
+    if bundled.exists():
+        return bundled
     return None
 
 
@@ -280,9 +290,22 @@ def run_site(site: Site, opts: argparse.Namespace) -> RunResult:
     # but a stripped assert would surface as a less clear failure
     # downstream (subprocess exec on a None path).
     if module_path is None:
+        cd = opts.config_dir
+        cd_exists = cd.exists() if cd is not None else None
+        cd_listing = (
+            sorted(p.name for p in cd.iterdir())[:20]
+            if cd is not None and cd_exists else None
+        )
+        ext_path = (cd / f"{site.module}.py") if cd is not None else None
+        ext_exists = ext_path.exists() if ext_path is not None else None
+        ref_path = REFERENCE_CONFIGS_DIR / f"{site.module}.py"
         raise FileNotFoundError(
             f"site {site.id} module {site.module}.py vanished between "
-            f"preflight and run"
+            f"preflight and run\n"
+            f"  config_dir={cd!r} exists={cd_exists}\n"
+            f"  listing={cd_listing}\n"
+            f"  external_candidate={ext_path!r} exists={ext_exists}\n"
+            f"  reference_candidate={ref_path!r} exists={ref_path.exists()}"
         )
     cmd = [sys.executable, str(module_path)]
     # ``--google-oauth`` resolves from either the seed's per-site
@@ -434,229 +457,46 @@ def append_history(result: RunResult, log_path: Path = LOG_FILE) -> None:
         f.write(json.dumps(asdict(result)) + "\n")
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Run daily claims across working casino sites."
-    )
-    parser.add_argument(
-        "--only",
-        nargs="+",
-        metavar="IDS",
-        help=(
-            "Only run these site ids. Accepts space-separated "
-            "(``--only spinquest stake_us``) and/or comma-delimited "
-            "(``--only spinquest,stake_us``) — the two can be mixed."
-        ),
-    )
-    parser.add_argument(
-        "--skip",
-        nargs="+",
-        metavar="IDS",
-        help=(
-            "Skip these site ids. Accepts space-separated "
-            "(``--skip spinquest zula_casino``) and/or comma-delimited "
-            "(``--skip spinquest,zula_casino``) — the two can be mixed."
-        ),
-    )
-    parser.add_argument(
-        "--headless", action="store_true", help="Pass --headless to each site."
-    )
-    parser.add_argument(
-        "--skip-claim",
-        action="store_true",
-        help="Pass --skip-claim to each site (login + balance read, no claim).",
-    )
-    parser.add_argument(
-        "--pause-on-stuck",
-        action="store_true",
-        help=(
-            "When ``casino.safe_click`` detects a click intercept (an "
-            "overlay sitting on top of the target), drop into Playwright's "
-            "Inspector via ``page.pause()`` so the user can interactively "
-            "inspect the DOM, dismiss the blocker, and resume. Sets "
-            "``GAMBA_PICK_PAUSE_ON_STUCK=1`` in the per-site subprocess "
-            "env. Ignored under ``--headless`` (Inspector needs a display)."
-        ),
-    )
-    parser.add_argument(
-        "--setup",
-        action="store_true",
-        help=(
-            "Pass --setup to each site so the script runs interactive "
-            "login once to bootstrap the persistent browser profile, "
-            "then exits without claim. Typically paired with "
-            "``--only <id>`` for one-site-at-a-time bootstrapping. "
-            "Implies ``--stream`` (setup blocks on user input — the "
-            "live stdout/stderr is required so the user can see "
-            "prompts). When ``--timeout-per-site`` is at its default, "
-            "the subprocess timeout is auto-bumped to 1200s so the "
-            "user has time to complete OAuth / 2FA in the browser."
-        ),
-    )
-    parser.add_argument(
-        "--google-oauth",
-        action="store_true",
-        help=(
-            "Force Google OAuth on every site this run, overriding "
-            "the seed's per-site ``auth`` field. Useful when this "
-            "user has Google-OAuth accounts on sites the seed "
-            "defaults to form-login (the ``auth`` field is "
-            "per-user-default, not site-inherent — both surfaces are "
-            "typically available on each site)."
-        ),
-    )
-    parser.add_argument(
-        "--timeout-per-site",
-        type=int,
-        default=DEFAULT_TIMEOUT_S,
-        help=(
-            f"Default per-site subprocess timeout in seconds (default "
-            f"{DEFAULT_TIMEOUT_S}). Individual sites may override via "
-            f"the ``timeout_s`` field in the seed TOML."
-        ),
-    )
-    parser.add_argument(
-        "--stream",
-        action="store_true",
-        help=(
-            "Dev mode: inherit child stdout/stderr (live output) "
-            "instead of capturing them, and skip the JSONL history "
-            "append. Pair with ``--only <id>`` to iterate on a "
-            "single site config and see logs in real time. The "
-            "outcome/balance parser is bypassed (it needs captured "
-            "output) — use the canonical capturing path for "
-            "production sweeps."
-        ),
-    )
-    parser.add_argument(
-        "--dry-run",
-        "--list",
-        action="store_true",
-        help=(
-            "Print the plan without running. ``--list`` is an alias — handy "
-            "when paired with ``--only``/``--skip`` to preview which sites "
-            "the next sweep would hit."
-        ),
-    )
-    parser.add_argument(
-        "--log-file",
-        type=Path,
-        default=LOG_FILE,
-        help="JSONL append-only history file.",
-    )
-    parser.add_argument(
-        "--seed-file",
-        type=Path,
-        default=SEED_FILE,
-        help="Sites seed TOML.",
-    )
-    parser.add_argument(
-        "--config-dir",
-        type=Path,
-        default=None,
-        help=(
-            "Directory holding additional site modules (e.g. the "
-            "Casino Buddy commercial catalog at ``./configs/``). The "
-            "runner searches this dir first, then falls back to the "
-            "in-tree framework path — so a single seed can list both "
-            "bundle modules and the public reference configs "
-            "(spinquest, stake_us) without forcing the bundle to "
-            "ship duplicates. Pair with ``--seed-file`` pointing at "
-            "the bundle's TOML."
-        ),
-    )
-    opts = parser.parse_args()
+def _append_csv_row(site: Site, result: RunResult, csv_path: Path) -> None:
+    """Translate a runner ``RunResult`` into a ``ClaimRow`` and append.
 
-    # ``--setup`` implies ``--stream``: setup mode blocks on user
-    # input (OAuth flow / "press Enter when done" prompts), so the
-    # subprocess must inherit stdout/stderr — captured output would
-    # buffer the prompts and the user would be typing blind.
-    if opts.setup and not opts.stream:
-        opts.stream = True
+    Picks the primary currency value from ``result.balances`` according
+    to ``site.primary_currency``; everything else lands in
+    ``secondary_balances``. If the primary isn't in the parsed balances
+    (e.g. a crash before the Account State line emitted), ``balance``
+    and ``currency`` are blank and *all* parsed balances go into
+    ``secondary_balances``.
+    """
+    from gamba_pick.csv_writer import ClaimRow, append_claim_row
 
-    all_sites = load_sites(opts.seed_file)
-    sites = [s for s in all_sites if s.status == "working" and s.module]
-    if opts.only:
-        keep = _expand_id_args(opts.only)
-        sites = [s for s in sites if s.id in keep]
-        missing = keep - {s.id for s in sites}
-        if missing:
-            print(f"warn: --only ids not in working set: {sorted(missing)}")
-    if opts.skip:
-        skip = _expand_id_args(opts.skip)
-        sites = [s for s in sites if s.id not in skip]
-
-    # Preflight: warn early on any seed entry whose module file isn't
-    # reachable in either the external ``--config-dir`` or in ROOT.
-    # Catches the "I removed a .py without updating the seed" mistake
-    # early instead of letting it surface as a subprocess no-op.
-    valid: List[Site] = []
-    for s in sites:
-        module_path = _resolve_module_path(s.module, opts.config_dir)
-        if module_path is None:
-            search = (
-                f"{opts.config_dir} or {ROOT}" if opts.config_dir else str(ROOT)
-            )
-            print(
-                f"warn: site '{s.id}' module {s.module}.py not found in "
-                f"{search} — skipping."
-            )
-            continue
-        valid.append(s)
-    sites = valid
-
-    if not sites:
-        print("No sites match the filters; nothing to do.")
-        return 1
-
-    location_note = f", configs from {opts.config_dir}" if opts.config_dir else ""
-    print(
-        f"Plan: {len(sites)} site(s) sequentially, "
-        f"default timeout {opts.timeout_per_site}s, "
-        f"{'headless' if opts.headless else 'visible'}, "
-        f"{'no-claim' if opts.skip_claim else 'with-claim'}{location_note}:"
-    )
-    for s in sites:
-        timeout_note = f"  [timeout {s.timeout_s}s]" if s.timeout_s is not None else ""
-        print(f"  - {s.id:20}  {s.module}.py  ({s.auth}){timeout_note}")
-    print()
-
-    if opts.dry_run:
-        return 0
-
-    results: List[RunResult] = []
-    for site in sites:
-        print(f"=== {site.id} ===", flush=True)
-        result = run_site(site, opts)
-        # Skip history append in --stream mode: those runs lack
-        # parsed outcome/balances and are dev-only. Production sweeps
-        # always go through the capturing path.
-        if not opts.stream:
-            append_history(result, opts.log_file)
-        flag = "ok" if result.ok else ("timeout" if result.timed_out else "fail")
-        # Render balances in alphabetical order for deterministic
-        # output (matches CasinoAccountState.__str__).
-        bal = ""
-        if result.balances:
-            bal = "  " + " ".join(
-                f"{code}={value}" for code, value in sorted(result.balances.items())
-            )
-        print(
-            f"  -> {flag}  {result.duration_s}s  claim={result.claim_outcome}{bal}",
-            flush=True,
-        )
-        results.append(result)
-
-    print()
-    ok_count = sum(r.ok for r in results)
-    # --stream mode skips the JSONL append (see the loop above), so the
-    # "history -> ..." trailer would lie. Drop it in that case.
-    if opts.stream:
-        print(f"Summary: {ok_count}/{len(results)} ok  (history not written: --stream)")
+    primary_code = site.primary_currency
+    primary_value = result.balances.get(primary_code)
+    if primary_value is not None:
+        secondary = {
+            code: val for code, val in result.balances.items()
+            if code != primary_code
+        }
+        currency = primary_code
     else:
-        print(f"Summary: {ok_count}/{len(results)} ok  (history -> {opts.log_file})")
-    return 0 if ok_count == len(results) else 1
+        secondary = dict(result.balances)
+        currency = ""
+
+    # ``ts`` on RunResult is already ISO-8601 UTC; date is the calendar
+    # day in UTC. Don't try to localize — claim_history is UTC and the
+    # CSV should match.
+    date = result.ts.split("T", 1)[0] if "T" in result.ts else result.ts
+
+    row = ClaimRow(
+        run_ts=result.ts,
+        date=date,
+        site=site.id,
+        balance=primary_value,
+        currency=currency,
+        secondary_balances=secondary,
+        duration_s=result.duration_s,
+        success=result.ok,
+        claim_outcome=result.claim_outcome,
+    )
+    append_claim_row(row, csv_path=csv_path)
 
 
-if __name__ == "__main__":
-    sys.exit(main())

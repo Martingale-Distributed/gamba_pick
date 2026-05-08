@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gamba_pick"
-version = "0.6.0"
+version = "0.7.0"
 description = "Auto Gamba for Fun and Profit"
 readme = { file = "README.md", content-type = "text/markdown" }
 license = "GPL-3.0-or-later"
@@ -20,7 +20,7 @@ keywords = [
     "playwright",
     "browser",
 ]
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 classifiers = [
     "Operating System :: OS Independent",
     "Development Status :: 4 - Beta",
@@ -53,13 +53,24 @@ dependencies = [
     "camoufox>=0.4.11",
     "geoip2>=4.8.1",
     "msgspec>=0.19.0",
-    "scrapling @ file:///home/lothrop/src/Scrapling",
+    # ``scrapling`` is vendored at ``vendor/scrapling/`` so customer installs
+    # are reproducible without external network access. See
+    # ``[tool.uv.sources]`` below for the path mapping. To refresh the
+    # vendored copy: rsync from the upstream Scrapling checkout, then
+    # commit. README.md inside vendor/scrapling/ records the upstream rev.
+    "scrapling",
+    "cryptography>=42",
+    "zstandard>=0.22",
 ]
 
 [project.optional-dependencies]
 shell = [
     "IPython>=8.3.0",     # The last version that supports Python 3.10
     "markdownify>=1.2.0",
+]
+test = [
+    "pytest>=8.0",
+    "pytest-mock>=3.12",
 ]
 
 [project.urls]
@@ -78,3 +89,10 @@ include-package-data = true
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["gamba_pick*"]
+
+# uv-specific dependency source: install the vendored scrapling from its
+# in-tree path rather than from PyPI / a git URL. Reproducible across
+# customer installs (the path is repo-relative) and survives the customer
+# zip (the source is committed alongside everything else).
+[tool.uv.sources]
+scrapling = { path = "./vendor/scrapling" }

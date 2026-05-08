@@ -34,7 +34,7 @@ Daily-bonus chain (verified live in the lobby):
 - close_btn_selector → ``button[aria-label="Close modal"]`` (the X on
   the modal header).
 
-Credentials come from picks.env via SHUFFLE_US_USERNAME / SHUFFLE_US_PASSWORD
+Credentials come from .env via SHUFFLE_US_USERNAME / SHUFFLE_US_PASSWORD
 (prefix derived from the ``shuffle.us`` domain by url_to_env_prefix).
 
 Usage
@@ -42,7 +42,7 @@ Usage
 python shuffle_us.py [--headless] [--google-oauth] [--skip-claim]
 """
 
-from casino import (
+from gamba_pick.casino import (
     CasinoConfig,
     Currency,
     CurrencyDisplayConfig,
@@ -52,7 +52,7 @@ from casino import (
     get_arg_parser,
     make_handle_google_one_tap_popup,
 )
-from scrapling_ext import make_casino_automation
+from gamba_pick.scrapling_ext import make_casino_automation
 
 
 def create_shuffle_us_config() -> CasinoConfig:
@@ -146,7 +146,7 @@ def create_shuffle_us_config() -> CasinoConfig:
         claim_pattern="mtb",
 
         # 2FA enabled on this account — TOTP secret read from
-        # ``SHUFFLE_US_2FA`` in picks.env, filled into the OTP input
+        # ``SHUFFLE_US_2FA`` in .env, filled into the OTP input
         # via the selectors above when the post-login challenge fires.
         # The challenge appears intermittently (only when the trust
         # cookie isn't current), so the framework's TOTP block is a

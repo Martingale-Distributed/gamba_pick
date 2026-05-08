@@ -9,6 +9,7 @@ __pycache__/
 .ve
 .env
 .pytest
+.claude/settings.json
 .benchmarks
 .bootstrap
 .appveyor.token
@@ -115,3 +116,10 @@ cloudflare_debug.html
 
 # runner.py output — append-only run history
 claim_history.jsonl
+.bootstrap-done
+claims.csv
+
+# Customer-facing catalog directory — holds encrypted .gpcat bundles for
+# local testing. Encrypted at rest but still customer-paid content; never
+# commit to a public repo.
+catalog/

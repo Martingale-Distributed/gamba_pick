@@ -47,9 +47,10 @@
 id = "spinquest"
 name = "SpinQuest"
 url = "https://spinquest.com"
-status = "working"
+status = "broken"
 auth = "form"
 module = "spinquest"
+primary_currency = "SC"
 
 [[site]]
 id = "stake_us"
@@ -59,6 +60,7 @@ affiliate_link = "https://stake.us/?c=vXzVKL4j"
 status = "working"
 auth = "form"
 module = "stake_us"
+primary_currency = "USDT"
 
 [[site]]
 id = "shuffle_us"
@@ -67,6 +69,7 @@ url = "https://shuffle.us"
 status = "working"
 auth = "form"
 module = "shuffle_us"
+primary_currency = "SC"
 
 [[site]]
 id = "zula_casino"
@@ -111,13 +114,6 @@ name = "YayCasino"
 url = "https://yaycasino.com"
 affiliate_link = "https://www.yaycasino.com/signup/74ffb2ba-4661-49e6-928a-eabf5ce39d8c"
 status = "commercial"
-
-[[site]]
-id = "yay_casino_us"
-name = "YayCasino US"
-url = "https://yaycasino.us"
-affiliate_link = "https://www.yaycasino.us/signup/9843212a-3b49-48fa-938b-483bb3ceb30f"
-status = "surveyed"
 
 [[site]]
 id = "chumba_casino"
