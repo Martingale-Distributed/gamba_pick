@@ -18,7 +18,7 @@ REM remote-code-execution path and unacceptable for a customer release.
 setlocal EnableDelayedExpansion
 
 set "UV_INSTALL_URL=https://astral.sh/uv/install.ps1"
-set "UV_INSTALL_SHA256=REPLACE_BEFORE_RELEASE"
+set "UV_INSTALL_SHA256=8034382058eae34a765c6b439d2e1a4987bab519cb444afd117c4bf139d89839"
 
 cd /d "%~dp0"
 
