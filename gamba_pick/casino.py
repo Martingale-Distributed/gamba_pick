@@ -1449,6 +1449,7 @@ def make_login_action_factory(
         Callable[[Page], None]
     ] = make_handle_google_one_tap_popup(close_selectors),
     post_login_form_callback: Optional[Callable[[Page], None]] = None,
+    pre_submit_settle_ms: int = 0,
 ) -> Callable[[str, str, Optional[str]], Callable[[Page], None]]:
     """Generator for creating a login action factory.
     Args:
@@ -1486,6 +1487,14 @@ def make_login_action_factory(
             # Fill in login form and submit
             page.fill(username_selector, username)
             page.fill(password_selector, password)
+
+            # Reactive forms (Angular, React) may detach/re-attach the
+            # submit button while validating character-by-character.
+            # Without a settle, ``page.click`` races the re-render and
+            # times out with "waiting for locator". See
+            # ``LoginConfig.pre_submit_settle_ms`` for the knob.
+            if pre_submit_settle_ms:
+                page.wait_for_timeout(pre_submit_settle_ms)
 
             # The submit button on SLNGApp-platform /login pages is gated
             # by Cloudflare Turnstile — it stays HTML-disabled until
@@ -2594,10 +2603,15 @@ def load_env_file(
 ) -> Optional[Path]:
     """Load ``KEY=VALUE`` pairs from a ``.env``-style file into ``os.environ``.
 
-    When ``path`` is ``None``, looks for ``.env`` in the current working
-    directory, then falls back to the legacy ``picks.env`` name with a
-    deprecation warning. Returns the ``Path`` that was loaded, or ``None`` if
-    no file was found.
+    When ``path`` is ``None``, the file is located by searching, in order:
+
+    1. The current working directory (``./.env`` then legacy ``./picks.env``).
+    2. The framework's install root — the directory containing the
+       ``gamba_pick`` package. This covers the case where the user runs a
+       config from a *companion* repo (e.g. ``casino-buddy-internal/``)
+       while their ``.env`` lives in the framework checkout.
+
+    Returns the ``Path`` that was loaded, or ``None`` if no file was found.
 
     Supported syntax: blank lines, ``#`` comments, optional ``export `` prefix,
     and optional single- or double-quoted values. Variable expansion is not
@@ -2607,10 +2621,22 @@ def load_env_file(
     global _env_loaded
 
     if path is None:
-        for candidate in (".env", "picks.env"):
-            p = Path(candidate)
+        # Search order: CWD first (user's explicit context wins), then
+        # the framework's install root (so companion-repo workflows
+        # don't need to ``cd`` into gamba_pick before running setup).
+        #
+        # ``Path(__file__)`` is ``.../gamba_pick/gamba_pick/casino.py``;
+        # ``parents[1]`` is the repo root that owns the package.
+        framework_root = Path(__file__).resolve().parents[1]
+        search_paths = [
+            Path(".env"),
+            Path("picks.env"),
+            framework_root / ".env",
+            framework_root / "picks.env",
+        ]
+        for p in search_paths:
             if p.exists():
-                if candidate == "picks.env":
+                if p.name == "picks.env":
                     log.warning(
                         "Loading credentials from picks.env — rename to .env; "
                         "the picks.env fallback is deprecated."
@@ -3087,6 +3113,25 @@ class LoginConfig:
     # candidates (e.g. ``button.sso-button``) would land on the wrong
     # one — Pulsz being the canonical example.
     google_oauth_btn_selectors: Optional[Tuple[str, ...]] = None
+    # Optional selector that's stably visible *only* once the user is
+    # past the login surface and inside the authenticated lobby (a
+    # balance pill, a "My Account" menu, an avatar). Used by smart
+    # ``--setup`` to decide "the credentialed login already finished,
+    # save and exit without prompting." Leave ``None`` if you don't
+    # have a stable hook yet — the smart-setup classifier falls back
+    # to URL-based heuristics, which usually suffice but are less
+    # precise on multi-frame lobbies.
+    setup_success_selector: Optional[str] = None
+    # Settle delay (ms) inserted between the password fill and the
+    # submit click in the form-login flow. Used for reactive forms
+    # (Angular, React) that detach/re-attach the submit button as
+    # validation runs character-by-character — without a settle,
+    # Playwright's locator races the re-render and times out waiting
+    # for the (transiently detached) element. ~1500-2000ms is usually
+    # plenty. Default 0 — leave at 0 unless ``page.click(submit)``
+    # times out with ``waiting for locator`` despite the button being
+    # visible at pre-fill probe time.
+    pre_submit_settle_ms: int = 0
 
 
 @dataclass

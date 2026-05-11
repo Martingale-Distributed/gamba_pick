@@ -5,6 +5,7 @@ from gamba_pick.casino import (
     GenericClaimConfig,
     MTBClaimConfig,
     SimpleClaimConfig,
+    _ensure_env_loaded,
     gaussian_random_delay,
     get_credentials,
     google_oauth_login_page_make,
@@ -18,6 +19,8 @@ from gamba_pick.casino import (
 )
 from pathlib import Path
 from typing import Callable, Optional, Dict
+from urllib.parse import urlparse
+
 from playwright.sync_api import Page
 
 from gamba_pick.selectors_generic import HEADER_LOGIN_BUTTON as _GENERIC_HEADER_LOGIN_BUTTON
@@ -93,6 +96,298 @@ def make_pre_login_click(selector: str) -> Callable[[Page], None]:
             log.warning("Pre-login click failed: %s", str(e))
 
     return click_pre_login
+
+
+# URL patterns that indicate Google's intermediate verification screens —
+# the user landed here because Google's risk-scoring routed the OAuth
+# flow through an extra step that needs human input (passkey prompt,
+# "Verify it's you", account chooser when multiple Google accounts are
+# signed in). These are observation-driven; expand as we see new ones.
+_GOOGLE_INTERMEDIATE_URL_FRAGMENTS: tuple = (
+    "accounts.google.com/v3/signin/challenge",
+    "accounts.google.com/signin/v2/challenge",
+    "accounts.google.com/v3/signin/identifier",  # email page when fresh
+    "accounts.google.com/signin/v2/identifier",
+    "/accounts/SetSID",  # Google's session-set callback; brief, OK to wait
+)
+
+# Casino-side URL fragments that signal "we're still in the OAuth/auth
+# handshake, not back on the casino domain." If the page URL matches
+# any of these, we're not done — don't classify as success yet.
+_AUTH_HANDSHAKE_URL_FRAGMENTS: tuple = (
+    "accounts.google.com",
+    "/auth0.com",
+    "login.auth.poker",
+    "/oauth2/",
+    "/connect/authorize",
+    "/AuthCallback",
+)
+
+
+def _classify_setup_state(page: Page, config: CasinoConfig) -> str:
+    """Heuristic post-login classifier for smart ``--setup``.
+
+    Returns one of:
+
+    - ``"success"`` — credentialed login completed; we're past the login
+      surface and inside the authenticated lobby. Save the session and
+      exit without prompting the user.
+    - ``"needs_human"`` — we hit a known intermediate that the framework
+      can't get through unattended (Google "Verify it's you", account
+      chooser, 2FA prompt, captcha challenge). Fall through to the
+      "press Enter when finished" prompt.
+
+    Heuristics today (in priority order):
+      1. URL matches a Google-intermediate fragment → ``needs_human``.
+      2. URL still on an auth-handshake host         → ``needs_human``.
+      3. URL netloc doesn't match the casino's       → ``needs_human``
+         (we navigated somewhere unexpected — different host).
+      4. ``setup_success_selector`` is configured AND visible → ``success``.
+      5. Login form inputs are not visible           → ``success``
+         (best-effort; the next run will re-prompt if the session
+         didn't actually carry).
+      6. Anything else → ``needs_human``.
+
+    **LLM-assist hook:** when this returns ``"needs_human"`` from the
+    fall-through case (5) — meaning we don't *know* what page we landed
+    on — an agent or carefully-prompted LLM call could classify with
+    much higher accuracy. The input payload it'd need:
+
+        {
+          "url": page.url,
+          "frame_urls": [f.url for f in page.frames],
+          "body_text_excerpt": page.evaluate(
+              "() => document.body.innerText.slice(0, 1500)"
+          ),
+          "visible_button_labels": [
+              (btn.text_content() or "").strip()
+              for btn in page.locator("button").all()[:30]
+              if btn.is_visible()
+          ],
+          "site_name": config.name,
+          "expected_lobby_url": config.url,
+        }
+
+    And the structured response:
+
+        {
+          "class": "success" | "intermediate" | "error" | "unknown",
+          "reason": "<one-sentence why>",
+          "next_action": "save_session" | "prompt_user" | "abort"
+        }
+
+    Not wired today — we lean on the heuristics + manual prompt
+    fallback. Wire when a second consumer (probe-failure triage,
+    claim-flow oddities) needs the same payload, so the LLM call
+    amortizes across uses.
+    """
+    url = page.url or ""
+
+    for fragment in _GOOGLE_INTERMEDIATE_URL_FRAGMENTS:
+        if fragment in url:
+            log.info(
+                f"[{config.name}] setup classifier: URL matches Google "
+                f"intermediate %r → needs_human",
+                fragment,
+            )
+            return "needs_human"
+
+    for fragment in _AUTH_HANDSHAKE_URL_FRAGMENTS:
+        if fragment in url:
+            log.info(
+                f"[{config.name}] setup classifier: URL still on auth "
+                f"handshake host %r → needs_human",
+                fragment,
+            )
+            return "needs_human"
+
+    # We're not on a known auth-handshake host. Are we on the casino's
+    # own domain? If we navigated somewhere completely unexpected
+    # (e.g. a CDN error page, a marketing micro-site), the apex netloc
+    # won't match — and we shouldn't claim success.
+    casino_netloc = urlparse(config.url).netloc.lower().removeprefix("www.")
+    current_netloc = urlparse(url).netloc.lower().removeprefix("www.")
+    if casino_netloc and current_netloc and current_netloc != casino_netloc:
+        log.info(
+            f"[{config.name}] setup classifier: current netloc %r doesn't "
+            "match casino netloc %r → needs_human",
+            current_netloc, casino_netloc,
+        )
+        return "needs_human"
+
+    success_sel = config.login.setup_success_selector
+    if success_sel:
+        try:
+            loc = page.locator(success_sel).first
+            if loc.count() > 0 and loc.is_visible():
+                log.info(
+                    f"[{config.name}] setup classifier: success_selector "
+                    f"%r is visible → success",
+                    success_sel,
+                )
+                return "success"
+        except BrowserError:
+            pass
+
+    # Best-effort fall-through: on the casino's own domain AND the login
+    # form is gone, so login probably succeeded. We don't gate on URL
+    # path change because some sites use the apex root as ``login_url``
+    # (americanluck), so the post-login lobby URL still ``startswith``
+    # the login URL — only the form-input visibility distinguishes them.
+    try:
+        user_loc = page.locator(config.login.username_selector).first
+        pw_loc = page.locator(config.login.password_selector).first
+        user_visible = user_loc.count() > 0 and user_loc.is_visible()
+        pw_visible = pw_loc.count() > 0 and pw_loc.is_visible()
+        if not user_visible and not pw_visible:
+            log.info(
+                f"[{config.name}] setup classifier: form inputs gone on "
+                "casino domain → success (best-effort)"
+            )
+            return "success"
+    except BrowserError:
+        pass
+
+    log.info(
+        f"[{config.name}] setup classifier: form inputs still visible at "
+        "url=%s → needs_human",
+        url[:120],
+    )
+    return "needs_human"
+
+
+def _try_setup_auto_login(
+    page: Page,
+    config: CasinoConfig,
+    google_oauth: bool,
+) -> str:
+    """Attempt a credentialed login during ``--setup``.
+
+    Returns one of ``"success"``, ``"needs_human"``, ``"no_creds"``.
+
+    The caller has already run ``pre_login`` and ``wait_for_turnstile``,
+    so the page is at the login surface with whatever pre-conditions
+    settled. This function just tries the credentialed step:
+
+    - **Form mode**: pull creds from ``.env`` via ``get_credentials``,
+      build the standard form-login factory (with ``pre_login=None``
+      because the caller already ran it), and execute. If creds aren't
+      present, return ``"no_creds"`` immediately — the caller falls
+      through to the manual prompt.
+    - **OAuth mode**: run the standard OAuth driver. If the Google
+      session is already warm in the profile, this auto-passes through
+      the chooser/consent screens. If the session is cold and
+      ``GOOGLE_EMAIL``/``GOOGLE_PASSWORD`` are set, the same-tab fallback
+      attempts auto-fill — usually gets through email, often stalls at
+      password under Google's intermediate verification (see the Auth0
+      forced-fresh blocker in the add-casino-site skill).
+
+    On any exception, log + classify the post-attempt state. The
+    classifier returns ``needs_human`` when the page is on an
+    intermediate, which is the right user-facing outcome anyway.
+    """
+    if google_oauth:
+        try:
+            oauth_login, _ = google_oauth_login_page_make(
+                button_selectors=config.login.google_oauth_btn_selectors,
+            )
+            oauth_login(page)
+        except BrowserError as e:
+            log.info(
+                f"[{config.name}] auto-OAuth attempt raised: %s "
+                "(classifier will decide outcome)",
+                e,
+            )
+        return _classify_setup_state(page, config)
+
+    # Form-login path.
+    try:
+        username, password, totp_secret = get_credentials(
+            config.url, twofa=config.requires_2fa,
+        )
+    except ValueError as e:
+        log.info(
+            f"[{config.name}] no form creds for auto-login: %s "
+            "(falling through to manual prompt)",
+            e,
+        )
+        return "no_creds"
+
+    # If ``pre_login`` already drove the entire login (e.g. it did its
+    # own fill + JS-click submit to work around a flaky reactive
+    # form), the page is already on the post-login lobby — short-
+    # circuit to the classifier so we don't try to re-fill a form
+    # that no longer exists.
+    early = _classify_setup_state(page, config)
+    if early == "success":
+        log.info(
+            f"[{config.name}] auto-form-login: pre_login already reached "
+            "the lobby — skipping framework form-fill."
+        )
+        return "success"
+
+    # Precondition: the username input must be present on the page. If
+    # pre_login didn't surface a login form (wrong selectors, site uses
+    # a separate /login URL we haven't navigated to, etc.), the
+    # framework's ``page.fill`` would just sit on ``wait_for_selector``
+    # until the timeout expires. Worse: when it eventually raises, the
+    # classifier's "form inputs gone" heuristic would FALSE-POSITIVE
+    # because there were never any form inputs in the first place.
+    # Bail before any of that.
+    try:
+        user_loc = page.locator(config.login.username_selector).first
+        if user_loc.count() == 0 or not user_loc.is_visible():
+            log.info(
+                f"[{config.name}] auto-form-login: username input %r not "
+                "visible on the page — pre_login probably didn't reach the "
+                "login surface. Falling through to manual prompt.",
+                config.login.username_selector,
+            )
+            return "needs_human"
+    except BrowserError:
+        return "needs_human"
+
+    login_action_factory = make_login_action_factory(
+        username_selector=config.login.username_selector,
+        password_selector=config.login.password_selector,
+        login_submit_selector=config.login.login_submit_selector,
+        totp_code_selector=config.login.totp_code_selector,
+        totp_submit_selector=config.login.totp_submit_selector,
+        # pre_login already ran in the caller — don't run it twice.
+        pre_login_form_callback=None,
+        post_login_form_callback=config.login.post_login_callback,
+        pre_submit_settle_ms=config.login.pre_submit_settle_ms,
+    )
+
+    # Setup mode inflates Playwright's page-level default timeout to
+    # ``SETUP_FETCH_TIMEOUT_MS`` (10 min) so the human-driven flow
+    # doesn't time out mid-2FA. That's wrong for the auto-attempt: if
+    # post-submit nav stalls, we want to fail fast and fall through to
+    # the manual prompt — not sit on a 10-minute hang. Tighten the
+    # default just for this attempt, then restore so the manual-prompt
+    # path still has the long fuse for the human's interactive work.
+    prev_default = 600_000  # we know setup set it to SETUP_FETCH_TIMEOUT_MS
+    try:
+        page.set_default_timeout(30_000)
+    except BrowserError:
+        pass
+
+    try:
+        login_action_factory(username, password, totp_secret)(page)
+    except BrowserError as e:
+        log.info(
+            f"[{config.name}] auto-form-login attempt raised: %s "
+            "(classifier will decide outcome)",
+            e,
+        )
+    finally:
+        try:
+            page.set_default_timeout(prev_default)
+        except BrowserError:
+            pass
+
+    return _classify_setup_state(page, config)
+
 
 def make_casino_automation(
     config: CasinoConfig,
@@ -214,6 +509,17 @@ def make_casino_automation(
                 first-time auth step) by hand. Session is saved into
                 ``user_data_dir`` and the script exits without claiming.
         """
+        # Load ``.env`` once for the whole run, regardless of auth mode.
+        # The form-login path already triggers this via ``get_credentials``;
+        # OAuth and setup paths skip ``get_credentials`` entirely, so any
+        # env var they need (today: ``GOOGLE_EMAIL`` / ``GOOGLE_PASSWORD``
+        # for the auto-fill fallback; future: anything an OAuth config
+        # wants to read) used to require a module-level ``load_env_file``
+        # call in each config. Doing it here makes the framework's env
+        # contract uniform across modes. Idempotent — guarded by
+        # ``_env_loaded`` so the form-login path's own call is a no-op.
+        _ensure_env_loaded()
+
         # Default a per-site OAuth profile so re-runs keep the Google session.
         if (google_oauth or setup) and user_data_dir is None:
             user_data_dir = _default_oauth_profile_dir(config.name)
@@ -266,12 +572,23 @@ def make_casino_automation(
         post_login = config.login.post_login_callback
 
         if setup:
-            # Setup mode runs pre_login to get us to the login page, then
-            # pauses so the user can click "Sign in with Google", complete
-            # any 2FA, grant site consent, etc. We don't call oauth_login
-            # here — the human is driving. Browser persistence writes cookies
-            # to user_data_dir as they arrive, so the session will be
-            # available on subsequent headless runs.
+            # Smart setup: try to complete the login automatically using
+            # whatever credentials are available (form creds from .env,
+            # or a warm Google profile / GOOGLE_EMAIL+PASSWORD), and only
+            # block for human input when an unhandled intermediate
+            # appears (2FA, account chooser, captcha, unknown page).
+            #
+            # Behaviorally, this is strictly an improvement over the old
+            # "always prompt" setup:
+            #   - If creds aren't available, identical to old behavior
+            #     (manual prompt).
+            #   - If creds are available and auth completes cleanly, the
+            #     human is never prompted — session saves and exits.
+            #   - If auth hits an intermediate, we fall through to the
+            #     same manual prompt as before.
+            #
+            # See ``_classify_setup_state`` for an LLM-assist hook on
+            # the "needs_human" classification path.
             def login_action(page: Page) -> None:
                 if pre_login is not None:
                     pre_login(page)
@@ -281,12 +598,34 @@ def make_casino_automation(
                 # human interaction — clicking Google before Turnstile
                 # is green triggers a hard reject on most sites.
                 wait_for_turnstile(page, timeout=300_000)
-                log.info("=" * 70)
-                log.info(
-                    f"[{config.name}] Browser is at the login page. "
-                    "Complete sign-in manually (Google OAuth, 2FA, site "
-                    "consent, whatever's needed)."
+
+                auto_outcome = _try_setup_auto_login(
+                    page, config, google_oauth,
                 )
+                if auto_outcome == "success":
+                    log.info(
+                        f"[{config.name}] Auto-login succeeded — saving "
+                        "session and exiting without prompting."
+                    )
+                    page.wait_for_timeout(1500)
+                    return
+
+                log.info("=" * 70)
+                if auto_outcome == "needs_human":
+                    log.info(
+                        f"[{config.name}] Auto-login reached an "
+                        "intermediate step (2FA, account chooser, captcha, "
+                        "or an unfamiliar page). Complete sign-in manually."
+                    )
+                else:
+                    # "no_creds" — happens on form-login --setup when
+                    # the env vars haven't been set up yet.
+                    log.info(
+                        f"[{config.name}] No saved credentials for "
+                        "auto-login. Complete sign-in manually (and add "
+                        f"creds to .env before next run so future --setup "
+                        "runs go through automatically)."
+                    )
                 log.info(
                     f"[{config.name}] When you're fully authenticated on "
                     "the site, come back here and press Enter to save the "
@@ -331,6 +670,7 @@ def make_casino_automation(
                 totp_submit_selector=config.login.totp_submit_selector,
                 pre_login_form_callback=pre_login,
                 post_login_form_callback=post_login,
+                pre_submit_settle_ms=config.login.pre_submit_settle_ms,
             )
             login_action = login_action_factory(username, password, totp_secret)
 
