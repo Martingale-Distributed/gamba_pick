@@ -2594,10 +2594,15 @@ def load_env_file(
 ) -> Optional[Path]:
     """Load ``KEY=VALUE`` pairs from a ``.env``-style file into ``os.environ``.
 
-    When ``path`` is ``None``, looks for ``.env`` in the current working
-    directory, then falls back to the legacy ``picks.env`` name with a
-    deprecation warning. Returns the ``Path`` that was loaded, or ``None`` if
-    no file was found.
+    When ``path`` is ``None``, the file is located by searching, in order:
+
+    1. The current working directory (``./.env`` then legacy ``./picks.env``).
+    2. The framework's install root — the directory containing the
+       ``gamba_pick`` package. This covers the case where the user runs a
+       config from a *companion* repo (e.g. ``casino-buddy-internal/``)
+       while their ``.env`` lives in the framework checkout.
+
+    Returns the ``Path`` that was loaded, or ``None`` if no file was found.
 
     Supported syntax: blank lines, ``#`` comments, optional ``export `` prefix,
     and optional single- or double-quoted values. Variable expansion is not
@@ -2607,10 +2612,22 @@ def load_env_file(
     global _env_loaded
 
     if path is None:
-        for candidate in (".env", "picks.env"):
-            p = Path(candidate)
+        # Search order: CWD first (user's explicit context wins), then
+        # the framework's install root (so companion-repo workflows
+        # don't need to ``cd`` into gamba_pick before running setup).
+        #
+        # ``Path(__file__)`` is ``.../gamba_pick/gamba_pick/casino.py``;
+        # ``parents[1]`` is the repo root that owns the package.
+        framework_root = Path(__file__).resolve().parents[1]
+        search_paths = [
+            Path(".env"),
+            Path("picks.env"),
+            framework_root / ".env",
+            framework_root / "picks.env",
+        ]
+        for p in search_paths:
             if p.exists():
-                if candidate == "picks.env":
+                if p.name == "picks.env":
                     log.warning(
                         "Loading credentials from picks.env — rename to .env; "
                         "the picks.env fallback is deprecated."

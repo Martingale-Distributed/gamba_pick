@@ -5,6 +5,7 @@ from gamba_pick.casino import (
     GenericClaimConfig,
     MTBClaimConfig,
     SimpleClaimConfig,
+    _ensure_env_loaded,
     gaussian_random_delay,
     get_credentials,
     google_oauth_login_page_make,
@@ -214,6 +215,17 @@ def make_casino_automation(
                 first-time auth step) by hand. Session is saved into
                 ``user_data_dir`` and the script exits without claiming.
         """
+        # Load ``.env`` once for the whole run, regardless of auth mode.
+        # The form-login path already triggers this via ``get_credentials``;
+        # OAuth and setup paths skip ``get_credentials`` entirely, so any
+        # env var they need (today: ``GOOGLE_EMAIL`` / ``GOOGLE_PASSWORD``
+        # for the auto-fill fallback; future: anything an OAuth config
+        # wants to read) used to require a module-level ``load_env_file``
+        # call in each config. Doing it here makes the framework's env
+        # contract uniform across modes. Idempotent — guarded by
+        # ``_env_loaded`` so the form-login path's own call is a no-op.
+        _ensure_env_loaded()
+
         # Default a per-site OAuth profile so re-runs keep the Google session.
         if (google_oauth or setup) and user_data_dir is None:
             user_data_dir = _default_oauth_profile_dir(config.name)
