@@ -35,17 +35,33 @@ from scrapling.cli import log
 SETUP_FETCH_TIMEOUT_MS = 600_000  # 10 minutes
 
 
-def _default_oauth_profile_dir(name: str) -> str:
-    """Derive a per-site profile dir under ``./profiles/<name>``.
+def _site_slug(name: str) -> str:
+    """Canonical filesystem-safe slug for a site name. Side-effect-free."""
+    return "".join(c if c.isalnum() else "_" for c in name).strip("_").lower()
 
-    Keeps OAuth sessions isolated per site (so a shared Google profile
-    can't be used to correlate activity across multiple sweepstakes
-    casinos, which is exactly what compliance systems look for).
+
+def _site_profile_path(name: str) -> Path:
+    """Resolve the per-site ``./profiles/<slug>`` path without creating
+    it. Callers that need the directory on disk must ``mkdir`` themselves.
     """
-    slug = "".join(c if c.isalnum() else "_" for c in name).strip("_").lower()
-    path = Path("profiles") / slug
+    return (Path("profiles") / _site_slug(name)).resolve()
+
+
+def _default_oauth_profile_dir(name: str) -> str:
+    """Derive a per-site profile dir under ``./profiles/<slug>``,
+    creating it on disk.
+
+    Used by the OAuth / ``--setup`` paths that need Camoufox's
+    ``user_data_dir`` to be a real directory. Keeps OAuth sessions
+    isolated per site (so a shared Google profile can't be used to
+    correlate activity across multiple sweepstakes casinos, which is
+    exactly what compliance systems look for).
+
+    Side-effect-free path-only callers should use ``_site_profile_path``.
+    """
+    path = _site_profile_path(name)
     path.mkdir(parents=True, exist_ok=True)
-    return str(path.resolve())
+    return str(path)
 
 
 def make_pre_login_click(selector: str) -> Callable[[Page], None]:
@@ -562,8 +578,11 @@ def make_casino_automation(
         # Camoufox) to still be able to restore session cookies from a
         # state snapshot captured during ``--setup``. Always resolve a
         # per-site state path; load + save will short-circuit if the
-        # file doesn't exist yet.
-        session_state_path = Path(_default_oauth_profile_dir(config.name)) / "state.json"
+        # file doesn't exist yet. Path resolution is side-effect-free
+        # — the parent dir is only created at save time (so ephemeral
+        # runs that never save don't litter the filesystem with empty
+        # ``profiles/<site>/`` dirs).
+        session_state_path = _site_profile_path(config.name) / "state.json"
         # Currently unused but reserved for future launch-time overrides
         # (flags that need to reach Playwright/Camoufox directly).
         additional_args: Dict = {}
@@ -730,8 +749,13 @@ def make_casino_automation(
             ephemeral form-login daily runs leave a fresh state.json
             for the next run's ``_load_storage_state`` to consume.
             ``_load_storage_state`` is the consumer.
+
+            Creates the parent directory lazily so the side-effect of
+            "you ran the framework once" doesn't leave behind empty
+            ``profiles/<site>/`` dirs on every config in the catalog.
             """
             try:
+                session_state_path.parent.mkdir(parents=True, exist_ok=True)
                 page.context.storage_state(path=str(session_state_path))
                 log.info(
                     f"[{config.name}] Saved storage_state to %s",
@@ -741,11 +765,16 @@ def make_casino_automation(
                 log.warning(
                     f"[{config.name}] storage_state save failed: %s", e,
                 )
+            except OSError as e:
+                log.warning(
+                    f"[{config.name}] storage_state save failed (FS): %s", e,
+                )
 
         def _load_storage_state(page: Page) -> bool:
-            """Restore session state from ``<user_data_dir>/state.json``
-            if present, then reload the current page so the cookies
-            take effect server-side.
+            """Restore session state from ``session_state_path``
+            (resolves to ``profiles/<slug>/state.json``, decoupled
+            from Camoufox's ``user_data_dir``) if present, then reload
+            the current page so the cookies take effect server-side.
 
             Restores cookies via ``context.add_cookies(...)``. Returns
             True if a non-empty state was loaded; False otherwise (no
