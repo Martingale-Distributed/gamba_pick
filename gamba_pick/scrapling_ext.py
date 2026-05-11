@@ -17,6 +17,7 @@ from gamba_pick.casino import (
     wait_for_load_all_safe,
     wait_for_turnstile,
 )
+import json
 from pathlib import Path
 from typing import Callable, Optional, Dict
 from urllib.parse import urlparse
@@ -555,6 +556,14 @@ def make_casino_automation(
         # Both StealthySession and DynamicSession expose user_data_dir as a
         # top-level constructor arg; pass "" when not set to mean "ephemeral".
         session_user_data_dir = user_data_dir or ""
+
+        # ``state.json`` path is decoupled from Camoufox's ``user_data_dir``
+        # — we want form-login daily runs (which run ephemerally in
+        # Camoufox) to still be able to restore session cookies from a
+        # state snapshot captured during ``--setup``. Always resolve a
+        # per-site state path; load + save will short-circuit if the
+        # file doesn't exist yet.
+        session_state_path = Path(_default_oauth_profile_dir(config.name)) / "state.json"
         # Currently unused but reserved for future launch-time overrides
         # (flags that need to reach Playwright/Camoufox directly).
         additional_args: Dict = {}
@@ -715,34 +724,117 @@ def make_casino_automation(
                 return False
 
         def _save_storage_state(page: Page) -> None:
-            """Snapshot the live session's cookies + localStorage to a
-            JSON file inside the user_data_dir. Best-effort backup; the
-            primary persistence mechanism is still Camoufox's profile
-            dir. The JSON is portable, auditable, and a recovery
-            artifact if the profile dir corrupts. Future framework
-            versions may also use it to inject session state into a
-            fresh context (cross-engine portability).
+            """Snapshot the live session's cookies + localStorage to
+            ``session_state_path``. Always runs (path is per-site and
+            decoupled from Camoufox's ``user_data_dir``), so even
+            ephemeral form-login daily runs leave a fresh state.json
+            for the next run's ``_load_storage_state`` to consume.
+            ``_load_storage_state`` is the consumer.
             """
-            if not user_data_dir:
-                return  # ephemeral session, nothing to back up
-            state_path = Path(user_data_dir) / "state.json"
             try:
-                page.context.storage_state(path=str(state_path))
+                page.context.storage_state(path=str(session_state_path))
                 log.info(
                     f"[{config.name}] Saved storage_state to %s",
-                    state_path,
+                    session_state_path,
                 )
             except BrowserError as e:
                 log.warning(
                     f"[{config.name}] storage_state save failed: %s", e,
                 )
 
+        def _load_storage_state(page: Page) -> bool:
+            """Restore session state from ``<user_data_dir>/state.json``
+            if present, then reload the current page so the cookies
+            take effect server-side.
+
+            Restores cookies via ``context.add_cookies(...)``. Returns
+            True if a non-empty state was loaded; False otherwise (no
+            file, empty cookies, parse error, or context-side rejection).
+
+            **Scope:** cookies only in v1. localStorage / sessionStorage
+            are saved in ``state.json`` (via Playwright's standard
+            ``storage_state`` format) but not restored here — most
+            sites carry auth state in cookies, and per-origin
+            localStorage restore requires navigating to each origin
+            before ``setItem``, which is heavier and rarely needed for
+            login persistence. If a site is found to need it, extend
+            this function to walk ``state["origins"]``.
+
+            **Failure model:** if cookies load but are expired
+            server-side, the page reload returns the logged-out view,
+            ``_session_is_already_authenticated`` returns False, and
+            the caller falls through to ``login_action`` — same as if
+            no state had been restored. No special "stale state"
+            handling is needed.
+            """
+            if not session_state_path.exists():
+                return False
+
+            try:
+                state = json.loads(session_state_path.read_text())
+            except (json.JSONDecodeError, OSError) as e:
+                log.warning(
+                    f"[{config.name}] state.json read/parse failed: %s",
+                    e,
+                )
+                return False
+
+            cookies = state.get("cookies") or []
+            if not cookies:
+                return False
+
+            try:
+                page.context.add_cookies(cookies)
+            except BrowserError as e:
+                log.warning(
+                    f"[{config.name}] context.add_cookies failed "
+                    "(state.json may be malformed): %s", e,
+                )
+                return False
+
+            log.info(
+                f"[{config.name}] Restored %d cookies from state.json; "
+                "reloading to pick up auth.",
+                len(cookies),
+            )
+
+            # Reload so server-side handlers see the cookies. The
+            # current page was loaded BEFORE we added the cookies, so
+            # the rendered HTML reflects the logged-out view.
+            try:
+                page.reload(wait_until="domcontentloaded", timeout=30000)
+            except BrowserError as e:
+                log.warning(
+                    f"[{config.name}] page.reload after state restore "
+                    "raised: %s — continuing anyway, auth check will "
+                    "decide.", e,
+                )
+            return True
+
         def casino_action(page: Page) -> None:
             """Main page action that orchestrates all casino operations."""
+            # Step 0: Restore storage_state if a state.json snapshot
+            # exists. Adds cookies to the browser context and reloads
+            # the page so server-side handlers see them. If the
+            # restored cookies are still valid, the auth check below
+            # will fire on the reloaded (logged-in) view and skip
+            # ``login_action`` entirely. If they're expired or the
+            # restore failed, behavior is identical to no-state — fall
+            # through to the regular login flow.
+            #
+            # Fires in setup mode too — re-running ``--setup`` against
+            # a still-valid state.json becomes a fast no-op: smart-
+            # setup's classifier sees ``setup_success_selector``
+            # visible, returns success, exits cleanly without re-
+            # attempting the form fill.
+            _load_storage_state(page)
+
             # Step 1: Login — but first check if the saved session
-            # already has us authenticated. If so, skip the form-fill
-            # entirely; just run ``post_login_callback`` (which may
-            # navigate to a lobby URL or dismiss popups).
+            # already has us authenticated (either via the Camoufox
+            # profile dir or the state.json restore above). If so,
+            # skip the form-fill entirely; just run
+            # ``post_login_callback`` (which may navigate to a lobby
+            # URL or dismiss popups).
             if not setup and _session_is_already_authenticated(page):
                 log.info(
                     f"[{config.name}] Saved session active — skipping "
