@@ -1449,6 +1449,7 @@ def make_login_action_factory(
         Callable[[Page], None]
     ] = make_handle_google_one_tap_popup(close_selectors),
     post_login_form_callback: Optional[Callable[[Page], None]] = None,
+    pre_submit_settle_ms: int = 0,
 ) -> Callable[[str, str, Optional[str]], Callable[[Page], None]]:
     """Generator for creating a login action factory.
     Args:
@@ -1486,6 +1487,14 @@ def make_login_action_factory(
             # Fill in login form and submit
             page.fill(username_selector, username)
             page.fill(password_selector, password)
+
+            # Reactive forms (Angular, React) may detach/re-attach the
+            # submit button while validating character-by-character.
+            # Without a settle, ``page.click`` races the re-render and
+            # times out with "waiting for locator". See
+            # ``LoginConfig.pre_submit_settle_ms`` for the knob.
+            if pre_submit_settle_ms:
+                page.wait_for_timeout(pre_submit_settle_ms)
 
             # The submit button on SLNGApp-platform /login pages is gated
             # by Cloudflare Turnstile — it stays HTML-disabled until
@@ -3104,6 +3113,25 @@ class LoginConfig:
     # candidates (e.g. ``button.sso-button``) would land on the wrong
     # one — Pulsz being the canonical example.
     google_oauth_btn_selectors: Optional[Tuple[str, ...]] = None
+    # Optional selector that's stably visible *only* once the user is
+    # past the login surface and inside the authenticated lobby (a
+    # balance pill, a "My Account" menu, an avatar). Used by smart
+    # ``--setup`` to decide "the credentialed login already finished,
+    # save and exit without prompting." Leave ``None`` if you don't
+    # have a stable hook yet — the smart-setup classifier falls back
+    # to URL-based heuristics, which usually suffice but are less
+    # precise on multi-frame lobbies.
+    setup_success_selector: Optional[str] = None
+    # Settle delay (ms) inserted between the password fill and the
+    # submit click in the form-login flow. Used for reactive forms
+    # (Angular, React) that detach/re-attach the submit button as
+    # validation runs character-by-character — without a settle,
+    # Playwright's locator races the re-render and times out waiting
+    # for the (transiently detached) element. ~1500-2000ms is usually
+    # plenty. Default 0 — leave at 0 unless ``page.click(submit)``
+    # times out with ``waiting for locator`` despite the button being
+    # visible at pre-fill probe time.
+    pre_submit_settle_ms: int = 0
 
 
 @dataclass
