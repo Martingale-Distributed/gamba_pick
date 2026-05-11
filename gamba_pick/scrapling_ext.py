@@ -142,10 +142,13 @@ def _classify_setup_state(page: Page, config: CasinoConfig) -> str:
       2. URL still on an auth-handshake host         → ``needs_human``.
       3. URL netloc doesn't match the casino's       → ``needs_human``
          (we navigated somewhere unexpected — different host).
-      4. ``setup_success_selector`` is configured AND visible → ``success``.
-      5. Login form inputs are not visible           → ``success``
-         (best-effort; the next run will re-prompt if the session
-         didn't actually carry).
+      4. If ``setup_success_selector`` is configured:
+         - visible     → ``success``
+         - not visible → ``needs_human`` (STRICT — do not fall through
+           to step 5; configured success selector is authoritative).
+      5. No success selector configured: login form inputs not
+         visible → ``success`` (best-effort fallback; the next run
+         will re-prompt if the session didn't actually carry).
       6. Anything else → ``needs_human``.
 
     **LLM-assist hook:** when this returns ``"needs_human"`` from the
@@ -217,6 +220,12 @@ def _classify_setup_state(page: Page, config: CasinoConfig) -> str:
 
     success_sel = config.login.setup_success_selector
     if success_sel:
+        # Configured ``setup_success_selector`` is a strict signal — if
+        # it's NOT visible, we are NOT in the lobby. Don't fall through
+        # to the form-inputs-gone heuristic, which over-trusts: on
+        # sites where login is a modal that hasn't mounted yet (or was
+        # never opened because pre_login's trigger click missed), the
+        # form inputs aren't visible *and* we're not logged in either.
         try:
             loc = page.locator(success_sel).first
             if loc.count() > 0 and loc.is_visible():
@@ -228,12 +237,20 @@ def _classify_setup_state(page: Page, config: CasinoConfig) -> str:
                 return "success"
         except BrowserError:
             pass
+        log.info(
+            f"[{config.name}] setup classifier: success_selector %r not "
+            "visible at url=%s → needs_human",
+            success_sel, url[:120],
+        )
+        return "needs_human"
 
-    # Best-effort fall-through: on the casino's own domain AND the login
-    # form is gone, so login probably succeeded. We don't gate on URL
-    # path change because some sites use the apex root as ``login_url``
-    # (americanluck), so the post-login lobby URL still ``startswith``
-    # the login URL — only the form-input visibility distinguishes them.
+    # No ``setup_success_selector`` configured — fall back to the
+    # form-gone heuristic. Best-effort: on the casino's own domain
+    # AND the login form is gone, so login probably succeeded. We
+    # don't gate on URL path change because some sites use the apex
+    # root as ``login_url`` (americanluck), so the post-login lobby
+    # URL still ``startswith`` the login URL — only the form-input
+    # visibility distinguishes them.
     try:
         user_loc = page.locator(config.login.username_selector).first
         pw_loc = page.locator(config.login.password_selector).first
@@ -674,12 +691,77 @@ def make_casino_automation(
             )
             login_action = login_action_factory(username, password, totp_secret)
 
+        def _session_is_already_authenticated(page: Page) -> bool:
+            """Detect whether the saved session has us already logged in.
+
+            Returns True if ``config.login.setup_success_selector`` is
+            configured AND visible on the page. The selector is the
+            authoritative logged-in indicator (a balance pill, an
+            avatar, a username badge) — when visible at session start,
+            it means Camoufox's persisted profile carried our session
+            and the login form is unnecessary.
+
+            Returns False if the selector isn't configured (we can't
+            detect), isn't visible (we're not logged in), or the
+            probe raises.
+            """
+            sel = config.login.setup_success_selector
+            if not sel:
+                return False
+            try:
+                loc = page.locator(sel).first
+                return loc.count() > 0 and loc.is_visible()
+            except BrowserError:
+                return False
+
+        def _save_storage_state(page: Page) -> None:
+            """Snapshot the live session's cookies + localStorage to a
+            JSON file inside the user_data_dir. Best-effort backup; the
+            primary persistence mechanism is still Camoufox's profile
+            dir. The JSON is portable, auditable, and a recovery
+            artifact if the profile dir corrupts. Future framework
+            versions may also use it to inject session state into a
+            fresh context (cross-engine portability).
+            """
+            if not user_data_dir:
+                return  # ephemeral session, nothing to back up
+            state_path = Path(user_data_dir) / "state.json"
+            try:
+                page.context.storage_state(path=str(state_path))
+                log.info(
+                    f"[{config.name}] Saved storage_state to %s",
+                    state_path,
+                )
+            except BrowserError as e:
+                log.warning(
+                    f"[{config.name}] storage_state save failed: %s", e,
+                )
+
         def casino_action(page: Page) -> None:
             """Main page action that orchestrates all casino operations."""
-            # Step 1: Login
-            log.info(f"[{config.name}] Starting login process...")
-            login_action(page)
+            # Step 1: Login — but first check if the saved session
+            # already has us authenticated. If so, skip the form-fill
+            # entirely; just run ``post_login_callback`` (which may
+            # navigate to a lobby URL or dismiss popups).
+            if not setup and _session_is_already_authenticated(page):
+                log.info(
+                    f"[{config.name}] Saved session active — skipping "
+                    "login_action and running post_login_callback only."
+                )
+                if post_login is not None:
+                    try:
+                        post_login(page)
+                    except BrowserError as e:
+                        log.warning(
+                            f"[{config.name}] post_login_callback raised "
+                            "on session-reuse path: %s", e,
+                        )
+            else:
+                log.info(f"[{config.name}] Starting login process...")
+                login_action(page)
             if setup:
+                # Save state for future session-reuse before exit.
+                _save_storage_state(page)
                 # In setup mode the login action blocks on user input; once
                 # it returns we just exit so the session writes and the
                 # browser closes cleanly. Skip balance/claim entirely.
@@ -734,6 +816,11 @@ def make_casino_automation(
                             f"[{config.name}] Error in additional action {i}: %s",
                             str(e),
                         )
+
+            # Save storage_state at the end of every successful daily
+            # run too — captures any session refreshes / new cookies
+            # the lobby + claim flow received.
+            _save_storage_state(page)
 
             log.info(f"[{config.name}] Casino action completed successfully")
 
