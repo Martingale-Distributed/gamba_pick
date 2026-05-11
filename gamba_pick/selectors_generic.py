@@ -99,6 +99,14 @@ TURNSTILE_CHECKBOX_OFFSET: tuple[int, int] = (26, 25)
 # the .modal-dialog level inside the .modal.show outer shell, rendered
 # as "+" text rotated to × via CSS. Kept first among site-pattern
 # entries because it's the most reliable cross-site match we've seen.
+#
+# The Material Icons "close" SVG-path selector at the end of the list
+# is the canonical X-icon path data shared by every MUI / Material
+# Icons "Close" button — many sites render their modal close as an
+# icon-only button with no text, no aria-label, no data-test hooks,
+# so the SVG path itself becomes the only stable identifier.
+# Distinctive enough that ``[d^="M19,6.41L17.59,5"]`` won't false-
+# match against unrelated SVG paths.
 MODAL_CLOSE_BUTTON: tuple[str, ...] = (
     "button.close-popup-button",                  # SLNGApp platform (FortuneWins, Zula, Sportzino)
     "button.transparent-close-popup-button",      # Same button, alt class wrapper variant
@@ -111,4 +119,5 @@ MODAL_CLOSE_BUTTON: tuple[str, ...] = (
     ".close",
     ".modal-close",
     "[data-testid='modal-close']",
+    'button:has(svg path[d^="M19,6.41L17.59,5L12,10.59"])',  # Material Icons "close"
 )
